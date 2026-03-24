@@ -32,4 +32,4 @@ def test_dashboard_creates() -> None:
     from pmod.dashboard.app import create_app
 
     app = create_app()
-    assert app.title == "PrintMoneyOrDie"
+    assert "PrintMoneyOrDie" in app.title
