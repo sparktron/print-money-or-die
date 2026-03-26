@@ -4,6 +4,7 @@ import dash
 from dash import dcc, html
 
 from pmod.dashboard.components import COLORS, FONT
+from pmod.dashboard.pages.politician_trades import politician_trades_layout
 from pmod.dashboard.pages.portfolio import portfolio_layout
 from pmod.dashboard.pages.settings import settings_layout
 from pmod.dashboard.pages.watchlist import watchlist_layout
@@ -111,6 +112,12 @@ def _build_nav() -> html.Div:
                             selected_className="tab--selected",
                         ),
                         dcc.Tab(
+                            label="Congress Trades",
+                            value="politician_trades",
+                            className="tab",
+                            selected_className="tab--selected",
+                        ),
+                        dcc.Tab(
                             label="Settings",
                             value="settings",
                             className="tab",
@@ -211,6 +218,8 @@ def create_app() -> dash.Dash:
             return portfolio_layout()
         if tab == "watchlist":
             return watchlist_layout()
+        if tab == "politician_trades":
+            return politician_trades_layout()
         if tab == "settings":
             return settings_layout()
         return html.Div("Unknown tab.")
