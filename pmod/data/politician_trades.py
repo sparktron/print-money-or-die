@@ -1,8 +1,9 @@
-"""Politician trade data ingestion from public congressional disclosure APIs.
+"""Politician trade data ingestion from Financial Modeling Prep (FMP).
 
-Uses the House Stock Watcher and Senate Stock Watcher public datasets,
-which aggregate STOCK Act filings from house.gov and senate.gov.
-No API key required.
+FMP provides free access to House and Senate STOCK Act disclosure data.
+Get a free API key (no credit card) at https://financialmodelingprep.com/developer/docs
+
+Rate limits: free tier allows ~250 requests/day.
 """
 
 import re
@@ -12,21 +13,22 @@ from typing import Any
 import httpx
 import structlog
 
+from pmod.config import get_settings
 from pmod.data.models import PoliticianTrade, get_session
 
 log = structlog.get_logger()
 
-_HOUSE_URL = (
-    "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com"
-    "/data/all_transactions.json"
-)
-_SENATE_URL = (
-    "https://senate-stock-watcher-data.s3-us-west-2.amazonaws.com"
-    "/aggregate/all_transactions.json"
-)
+_FMP_BASE = "https://financialmodelingprep.com/api/v4"
+_HOUSE_LATEST = _FMP_BASE + "/house-latest-trading"
+_SENATE_LATEST = _FMP_BASE + "/senate-latest-trading"
+# Per-ticker endpoints (used when FMP_API_KEY is set and bulk endpoints are exhausted)
+_HOUSE_BY_TICKER = _FMP_BASE + "/house-trading-rss-feed"
+_SENATE_BY_TICKER = _FMP_BASE + "/senate-trading-rss-feed"
 
-# Maps disclosure amount strings to (low, high) integer dollar values
-_AMOUNT_MAP: dict[str, tuple[int, int]] = {
+_DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"]
+
+# Maps FMP amount strings to (low, high) dollar values
+_AMOUNT_MAP: dict[str, tuple[int, int | None]] = {
     "$1,001 - $15,000": (1_001, 15_000),
     "$15,001 - $50,000": (15_001, 50_000),
     "$50,001 - $100,000": (50_001, 100_000),
@@ -36,14 +38,12 @@ _AMOUNT_MAP: dict[str, tuple[int, int]] = {
     "$1,000,001 - $5,000,000": (1_000_001, 5_000_000),
     "$5,000,001 - $25,000,000": (5_000_001, 25_000_000),
     "$25,000,001 - $50,000,000": (25_000_001, 50_000_000),
-    "Over $50,000,000": (50_000_001, None),  # type: ignore[dict-item]
+    "Over $50,000,000": (50_000_001, None),
 }
-
-_DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"]
 
 
 def _parse_date(raw: str | None) -> datetime | None:
-    """Try each known date format, return None if all fail."""
+    """Try each known date format; return None if all fail."""
     if not raw:
         return None
     for fmt in _DATE_FORMATS:
@@ -67,7 +67,7 @@ def _parse_amount(raw: str | None) -> tuple[int | None, int | None]:
 def _normalize_trade_type(raw: str) -> str | None:
     """Normalize trade type strings to canonical enum values."""
     lower = raw.lower().strip()
-    if "purchase" in lower or "buy" in lower:
+    if "purchase" in lower or lower == "buy":
         return "purchase"
     if "sale (partial)" in lower or "partial" in lower:
         return "sale_partial"
@@ -78,16 +78,22 @@ def _normalize_trade_type(raw: str) -> str | None:
     return None
 
 
-def _fetch_json(url: str, timeout: int = 30) -> list[dict[str, Any]]:
-    """Fetch JSON from a URL with a timeout; raise on HTTP errors."""
+def _fetch_json(url: str, params: dict[str, str], timeout: int = 30) -> list[dict[str, Any]]:
+    """Fetch JSON from a URL with query params; raise on HTTP errors."""
     log.info("fetching politician trade data", url=url)
-    resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+    resp = httpx.get(url, params=params, timeout=timeout, follow_redirects=True)
     resp.raise_for_status()
-    return resp.json()  # type: ignore[no-any-return]
+    data = resp.json()
+    if isinstance(data, dict):
+        # FMP wraps some responses; surface a useful error
+        if "Error Message" in data:
+            raise RuntimeError(f"FMP API error: {data['Error Message']}")
+        return []
+    return data  # type: ignore[return-value]
 
 
 def _parse_house_record(record: dict[str, Any]) -> PoliticianTrade | None:
-    """Convert a raw house stock watcher record to a PoliticianTrade."""
+    """Convert a raw FMP house trading record to a PoliticianTrade."""
     ticker = (record.get("ticker") or "").strip().upper()
     if not ticker or ticker in ("--", "N/A", ""):
         return None
@@ -96,7 +102,7 @@ def _parse_house_record(record: dict[str, Any]) -> PoliticianTrade | None:
     if trade_type is None:
         return None
 
-    disclosure_date = _parse_date(record.get("disclosure_date"))
+    disclosure_date = _parse_date(record.get("disclosureDate") or record.get("disclosure_date"))
     if disclosure_date is None:
         return None
 
@@ -108,9 +114,9 @@ def _parse_house_record(record: dict[str, Any]) -> PoliticianTrade | None:
         party=record.get("party"),
         state=(record.get("district") or "")[:2] or None,
         ticker=ticker,
-        company_name=record.get("asset_description"),
+        company_name=record.get("assetDescription") or record.get("asset_description"),
         trade_type=trade_type,
-        transaction_date=_parse_date(record.get("transaction_date")),
+        transaction_date=_parse_date(record.get("transactionDate") or record.get("transaction_date")),
         disclosure_date=disclosure_date,
         amount_low=amount_low,
         amount_high=amount_high,
@@ -118,7 +124,7 @@ def _parse_house_record(record: dict[str, Any]) -> PoliticianTrade | None:
 
 
 def _parse_senate_record(record: dict[str, Any]) -> PoliticianTrade | None:
-    """Convert a raw senate stock watcher record to a PoliticianTrade."""
+    """Convert a raw FMP senate trading record to a PoliticianTrade."""
     ticker = (record.get("ticker") or "").strip().upper()
     if not ticker or ticker in ("--", "N/A", ""):
         return None
@@ -127,21 +133,21 @@ def _parse_senate_record(record: dict[str, Any]) -> PoliticianTrade | None:
     if trade_type is None:
         return None
 
-    disclosure_date = _parse_date(record.get("disclosure_date"))
+    disclosure_date = _parse_date(record.get("disclosureDate") or record.get("disclosure_date"))
     if disclosure_date is None:
         return None
 
     amount_low, amount_high = _parse_amount(record.get("amount"))
 
     return PoliticianTrade(
-        politician_name=record.get("senator") or "Unknown",
+        politician_name=record.get("senator") or record.get("firstName", "") + " " + record.get("lastName", "") or "Unknown",
         chamber="senate",
         party=None,
         state=None,
         ticker=ticker,
-        company_name=record.get("asset_description"),
+        company_name=record.get("assetDescription") or record.get("asset_description"),
         trade_type=trade_type,
-        transaction_date=_parse_date(record.get("transaction_date")),
+        transaction_date=_parse_date(record.get("transactionDate") or record.get("transaction_date")),
         disclosure_date=disclosure_date,
         amount_low=amount_low,
         amount_high=amount_high,
@@ -149,18 +155,26 @@ def _parse_senate_record(record: dict[str, Any]) -> PoliticianTrade | None:
 
 
 def fetch_and_store_trades() -> dict[str, int]:
-    """Fetch all congressional trade disclosures and upsert into the DB.
+    """Fetch all congressional trade disclosures via FMP and upsert into the DB.
 
+    Requires FMP_API_KEY to be set in .env.
     Returns a dict with counts: {"house": N, "senate": M, "errors": K}.
     """
+    settings = get_settings()
+    if not settings.fmp_api_key:
+        raise RuntimeError(
+            "FMP_API_KEY is not set. Get a free key at "
+            "https://financialmodelingprep.com/developer/docs and add it to your .env file."
+        )
+
+    params = {"apikey": settings.fmp_api_key}
     session = get_session()
     counts: dict[str, int] = {"house": 0, "senate": 0, "errors": 0}
 
     try:
-        # Clear existing records before refreshing (full snapshot data)
         session.query(PoliticianTrade).delete()
 
-        for raw in _fetch_json(_HOUSE_URL):
+        for raw in _fetch_json(_HOUSE_LATEST, params):
             trade = _parse_house_record(raw)
             if trade is not None:
                 session.add(trade)
@@ -168,7 +182,7 @@ def fetch_and_store_trades() -> dict[str, int]:
             else:
                 counts["errors"] += 1
 
-        for raw in _fetch_json(_SENATE_URL):
+        for raw in _fetch_json(_SENATE_LATEST, params):
             trade = _parse_senate_record(raw)
             if trade is not None:
                 session.add(trade)
