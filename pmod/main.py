@@ -248,8 +248,20 @@ def research() -> None:
 
 @research.command("run")
 def research_run() -> None:
-    """Run a research pass and update watchlist."""
-    click.echo("Research pass: not yet implemented.")
+    """Run a full research pass: politician signals → screener → watchlist."""
+    from pmod.research.politician_signals import generate_signals
+    from pmod.research.screener import screen_and_update_watchlist
+
+    click.echo("\n  Generating politician trade signals…")
+    signals = generate_signals()
+    strong = sum(1 for s in signals if s.signal == "strong_buy")
+    buys = sum(1 for s in signals if s.signal == "buy")
+    click.echo(f"    {len(signals)} signals ({strong} strong buy, {buys} buy)")
+
+    click.echo("  Running screener and updating watchlist…")
+    count = screen_and_update_watchlist()
+    click.echo(f"    {count} tickers added/updated on watchlist")
+    click.echo("  Done.\n")
 
 
 @cli.group()
