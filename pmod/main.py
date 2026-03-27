@@ -142,21 +142,101 @@ def portfolio() -> None:
 
 @portfolio.command("status")
 def portfolio_status() -> None:
-    """Show current portfolio and suggested rebalance."""
-    click.echo("Portfolio status: not yet implemented.")
+    """Show current portfolio positions and balances."""
+    from pmod.broker.schwab import get_account_summary
+
+    summary = get_account_summary()
+    if summary is None:
+        click.echo("Could not retrieve account — run `pmod auth login` first.")
+        return
+
+    click.echo(f"\n  Account  ···{summary.account_number[-4:] if summary.account_number else 'N/A'}")
+    click.echo(f"  Value    ${summary.total_value:>14,.2f}")
+    click.echo(f"  Cash     ${summary.cash_balance:>14,.2f}")
+    day_sign = "+" if summary.day_pnl >= 0 else ""
+    click.echo(f"  Day P&L  {day_sign}${abs(summary.day_pnl):>13,.2f}\n")
+
+    if not summary.positions:
+        click.echo("  No equity positions.")
+        return
+
+    click.echo(f"  {'Ticker':<8} {'Shares':>10} {'Price':>10} {'Value':>12} {'Day P&L':>10} {'Total':>8}")
+    click.echo("  " + "-" * 62)
+    for p in summary.positions:
+        day = f"{'+' if p.day_pnl >= 0 else ''}{p.day_pnl:,.0f}"
+        total = f"{'+' if p.total_pnl_pct >= 0 else ''}{p.total_pnl_pct:.1f}%"
+        shares_str = (
+            f"{p.shares:.4f}".rstrip("0").rstrip(".")
+            if p.shares != int(p.shares)
+            else str(int(p.shares))
+        )
+        click.echo(
+            f"  {p.ticker:<8} {shares_str:>10} ${p.current_price:>9,.2f} ${p.market_value:>11,.0f} {day:>10} {total:>8}"
+        )
+    click.echo()
 
 
 @portfolio.command("rebalance")
 @click.option("--dry-run", is_flag=True, help="Preview rebalance without executing.")
 def portfolio_rebalance(dry_run: bool) -> None:
-    """Execute a rebalance based on optimizer output."""
+    """Rebalance the portfolio using equal-weight optimization."""
+    from pmod.optimizer.portfolio import compute_rebalance
+    from pmod.preferences.profile import load_preferences_dict
+
+    prefs = load_preferences_dict()
+    max_pos = float(prefs.get("max_position_pct", 5.0))
+
+    click.echo(f"\n  Computing rebalance (max position: {max_pos}%)…\n")
+    plan = compute_rebalance(max_position_pct=max_pos)
+
+    if not plan.trades:
+        click.echo("  No rebalance data — connect Schwab first.")
+        return
+
+    click.echo(f"  {'Ticker':<8} {'Action':<6} {'Shares Δ':>10} {'$ Δ':>12}  {'Cur %':>7}  {'Tgt %':>7}")
+    click.echo("  " + "-" * 58)
+    for t in sorted(plan.trades, key=lambda x: abs(x.dollar_delta), reverse=True):
+        sign = "+" if t.shares_delta >= 0 else ""
+        dsign = "+" if t.dollar_delta >= 0 else ""
+        click.echo(
+            f"  {t.ticker:<8} {t.action:<6} {sign}{t.shares_delta:>9}  {dsign}${abs(t.dollar_delta):>10,.0f}"
+            f"  {t.current_weight_pct:>6.1f}%  {t.target_weight_pct:>6.1f}%"
+        )
+
+    cash_sign = "+" if plan.net_cash_change >= 0 else ""
+    click.echo(f"\n  Net cash impact: {cash_sign}${plan.net_cash_change:,.0f}")
+    click.echo(f"  Cash available:  ${plan.cash_available:,.0f}\n")
+
     if dry_run:
-        click.echo("Dry-run rebalance: not yet implemented.")
-    else:
-        if not click.confirm("Execute live rebalance? This will place real trades."):
-            click.echo("Aborted.")
-            return
-        click.echo("Live rebalance: not yet implemented.")
+        click.echo("  Dry run — no trades placed.\n")
+        return
+
+    actionable = [t for t in plan.trades if t.action != "hold"]
+    if not actionable:
+        click.echo("  Portfolio is already balanced.\n")
+        return
+
+    if not click.confirm(f"  Execute {len(actionable)} trade(s)? This will place real orders."):
+        click.echo("  Aborted.\n")
+        return
+
+    from pmod.broker.schwab import OrderRequest, place_order
+
+    for t in actionable:
+        if t.shares_delta == 0:
+            continue
+        req = OrderRequest(
+            ticker=t.ticker,
+            instruction=t.action,
+            quantity=abs(t.shares_delta),
+            order_type="market",
+        )
+        result = place_order(req)
+        status = "OK" if result.success else "FAIL"
+        sign = "+" if t.shares_delta > 0 else ""
+        click.echo(f"  [{status}] {t.action.upper()} {abs(t.shares_delta)} {t.ticker} — {result.message}")
+
+    click.echo()
 
 
 @cli.group()

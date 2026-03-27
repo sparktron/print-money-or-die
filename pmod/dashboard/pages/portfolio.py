@@ -216,6 +216,41 @@ def portfolio_layout() -> html.Div:
         section_header("Positions", "sorted by market value"),
         _positions_table(rows_data),
 
+        # Rebalance section
+        html.Div(
+            [
+                html.Hr(style={"border": "none", "borderTop": f"1px solid {COLORS['border']}", "margin": "28px 0 24px 0"}),
+                html.Div(
+                    [
+                        section_header("Rebalance", "equal-weight target, capped at your max position size"),
+                        html.Button(
+                            "Suggest Rebalance",
+                            id="portfolio-rebalance-btn",
+                            n_clicks=0,
+                            style={
+                                "padding": "10px 24px",
+                                "fontSize": "13px",
+                                "fontWeight": "600",
+                                "color": COLORS["text_primary"],
+                                "background": COLORS["accent"],
+                                "border": "none",
+                                "borderRadius": "10px",
+                                "cursor": "pointer" if is_live else "not-allowed",
+                                "opacity": "1" if is_live else "0.4",
+                            },
+                            disabled=not is_live,
+                        ),
+                    ],
+                    style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "16px"},
+                ),
+                html.Div(
+                    "Connect Schwab to enable rebalancing." if not is_live else "",
+                    id="portfolio-rebalance-panel",
+                    style={"fontSize": "13px", "color": COLORS["text_tertiary"], "fontStyle": "italic"},
+                ),
+            ],
+        ),
+
         # Footer
         html.Div(
             "Sample data shown — connect Schwab and refresh" if not is_live else f"Live data from account ···{summary.account_number[-4:] if summary and summary.account_number else ''}",  # type: ignore[union-attr]

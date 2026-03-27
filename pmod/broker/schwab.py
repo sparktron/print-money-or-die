@@ -9,6 +9,22 @@ log = structlog.get_logger()
 
 
 @dataclass
+class OrderRequest:
+    ticker: str
+    instruction: str  # "buy" | "sell"
+    quantity: int  # whole shares only
+    order_type: str = "market"  # "market" | "limit"
+    limit_price: float | None = None
+
+
+@dataclass
+class OrderResult:
+    success: bool
+    order_id: str | None = None
+    message: str = ""
+
+
+@dataclass
 class Position:
     ticker: str
     company_name: str
@@ -140,3 +156,63 @@ def get_account_summary() -> AccountSummary | None:
         day_pnl=day_pnl,
         positions=positions,
     )
+
+
+def place_order(request: OrderRequest) -> OrderResult:
+    """Place a market or limit equity order on the first linked Schwab account."""
+    from schwab.orders.equities import (
+        equity_buy_limit,
+        equity_buy_market,
+        equity_sell_limit,
+        equity_sell_market,
+    )
+
+    from pmod.auth.schwab import get_client
+
+    if request.quantity <= 0:
+        return OrderResult(success=False, message="Quantity must be a positive integer.")
+
+    try:
+        client = get_client()
+
+        if request.instruction == "buy":
+            if request.order_type == "limit" and request.limit_price:
+                order = equity_buy_limit(request.ticker, request.quantity, request.limit_price)
+            else:
+                order = equity_buy_market(request.ticker, request.quantity)
+        elif request.instruction == "sell":
+            if request.order_type == "limit" and request.limit_price:
+                order = equity_sell_limit(request.ticker, request.quantity, request.limit_price)
+            else:
+                order = equity_sell_market(request.ticker, request.quantity)
+        else:
+            return OrderResult(success=False, message=f"Unknown instruction: {request.instruction!r}")
+
+        resp_accts = client.get_accounts()
+        resp_accts.raise_for_status()
+        accounts: list[dict] = resp_accts.json()
+        if not accounts:
+            return OrderResult(success=False, message="No Schwab accounts found.")
+
+        acct = _unwrap_account(accounts[0])
+        account_number = str(acct.get("accountNumber", ""))
+
+        resp = client.place_order(account_number, order)
+        if resp.status_code in (200, 201):
+            location = resp.headers.get("Location", "")
+            order_id = location.rsplit("/", 1)[-1] if "/" in location else None
+            log.info(
+                "order_placed",
+                ticker=request.ticker,
+                instruction=request.instruction,
+                quantity=request.quantity,
+                order_id=order_id,
+            )
+            return OrderResult(success=True, order_id=order_id, message="Order placed successfully.")
+        else:
+            log.error("order_rejected", status=resp.status_code, body=resp.text[:300])
+            return OrderResult(success=False, message=f"Order rejected ({resp.status_code}).")
+
+    except Exception as exc:
+        log.error("place_order_error", error=str(exc))
+        return OrderResult(success=False, message=str(exc))

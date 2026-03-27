@@ -308,7 +308,8 @@ def _pick_card(pick: dict) -> html.Div:  # type: ignore[type-arg]
                 [
                     html.Button(
                         "Add to Portfolio",
-                        disabled=True,
+                        id={"type": "watchlist-buy", "ticker": pick["ticker"], "name": pick["name"], "price": pick["price"]},
+                        n_clicks=0,
                         style={
                             "flex": "1",
                             "padding": "10px",
@@ -319,12 +320,12 @@ def _pick_card(pick: dict) -> html.Div:  # type: ignore[type-arg]
                             "border": "none",
                             "borderRadius": "10px",
                             "cursor": "pointer",
-                            "opacity": "0.8",
                         },
                     ),
                     html.Button(
                         "Dismiss",
-                        disabled=True,
+                        id={"type": "watchlist-dismiss", "ticker": pick["ticker"]},
+                        n_clicks=0,
                         style={
                             "padding": "10px 20px",
                             "fontSize": "13px",
