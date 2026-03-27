@@ -936,6 +936,7 @@ def create_app() -> dash.Dash:
             return no_update, no_update
 
         try:
+            import json
             from pmod.preferences.profile import load_preferences_dict, save_preferences
             prefs = load_preferences_dict()
             save_preferences(
@@ -944,7 +945,7 @@ def create_app() -> dash.Dash:
                 max_position_pct=float(prefs.get("max_position_pct", 5.0)),
                 rebalance_frequency=prefs.get("rebalance_frequency", "manual"),
                 trade_execution=prefs.get("trade_execution", "manual-confirm"),
-                sector_focus=[],
+                sector_focus=json.loads(prefs.get("sector_focus", "[]")),
             )
             return "✓ Applied", True
         except Exception as exc:
@@ -966,6 +967,7 @@ def create_app() -> dash.Dash:
             return no_update, no_update
 
         try:
+            import json
             from pmod.preferences.profile import load_preferences_dict, save_preferences
             prefs = load_preferences_dict()
             save_preferences(
@@ -974,7 +976,7 @@ def create_app() -> dash.Dash:
                 max_position_pct=float(prefs.get("max_position_pct", 5.0)),
                 rebalance_frequency=prefs.get("rebalance_frequency", "manual"),
                 trade_execution=prefs.get("trade_execution", "manual-confirm"),
-                sector_focus=[],
+                sector_focus=json.loads(prefs.get("sector_focus", "[]")),
             )
             return "✓ Applied", True
         except Exception as exc:
