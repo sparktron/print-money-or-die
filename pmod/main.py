@@ -30,6 +30,101 @@ def auth_login() -> None:
     run_oauth_flow()
 
 
+@cli.command("setup")
+def setup() -> None:
+    """Run the interactive trading profile setup wizard."""
+    import json
+
+    import click
+
+    from pmod.preferences.profile import has_completed_setup, save_preferences
+
+    if has_completed_setup():
+        if not click.confirm("A profile already exists. Re-run setup and overwrite it?"):
+            click.echo("Aborted.")
+            return
+
+    click.echo("\n  PrintMoneyOrDie — Trading Profile Setup\n")
+
+    risk_choices = {"1": "low", "2": "medium", "3": "high", "4": "degen"}
+    click.echo("  Risk Tolerance:")
+    click.echo("    1) Conservative  — capital preservation first")
+    click.echo("    2) Moderate      — balanced growth and safety")
+    click.echo("    3) Aggressive    — high returns, high volatility")
+    click.echo("    4) Full Degen    — max risk, max potential")
+    risk_input = click.prompt("  Choice", type=click.Choice(list(risk_choices)), show_choices=False)
+    risk = risk_choices[risk_input]
+
+    strategy_choices = {"1": "growth", "2": "value", "3": "dividend", "4": "momentum", "5": "balanced"}
+    click.echo("\n  Investment Strategy:")
+    click.echo("    1) Growth    — high-revenue momentum, tech/biotech")
+    click.echo("    2) Value     — undervalued companies, Buffett-style")
+    click.echo("    3) Dividend  — steady income, REITs, utilities")
+    click.echo("    4) Momentum  — trade what's working now")
+    click.echo("    5) Balanced  — diversified mix of styles")
+    strat_input = click.prompt("  Choice", type=click.Choice(list(strategy_choices)), show_choices=False)
+    strategy = strategy_choices[strat_input]
+
+    all_sectors = [
+        "Technology", "Healthcare", "Financials", "Energy",
+        "Consumer Discretionary", "Consumer Staples", "Industrials",
+        "Materials", "Utilities", "Real Estate", "Communication Services",
+    ]
+    click.echo("\n  Sector Focus (comma-separated numbers, or Enter to skip):")
+    for i, s in enumerate(all_sectors, 1):
+        click.echo(f"    {i:>2}) {s}")
+    raw = click.prompt("  Selection", default="")
+    sectors: list[str] = []
+    if raw.strip():
+        for tok in raw.split(","):
+            try:
+                idx = int(tok.strip()) - 1
+                if 0 <= idx < len(all_sectors):
+                    sectors.append(all_sectors[idx])
+            except ValueError:
+                pass
+
+    max_pos = click.prompt(
+        "\n  Max position size per ticker (%)", type=float, default=5.0
+    )
+
+    rebalance_choices = {"1": "manual", "2": "weekly", "3": "daily"}
+    click.echo("\n  Rebalance frequency:")
+    click.echo("    1) Manual  — I'll trigger it myself")
+    click.echo("    2) Weekly  — every Sunday")
+    click.echo("    3) Daily   — every market day")
+    reb_input = click.prompt("  Choice", type=click.Choice(list(rebalance_choices)), show_choices=False)
+    rebalance = rebalance_choices[reb_input]
+
+    exec_choices = {"1": "manual-confirm", "2": "auto"}
+    click.echo("\n  Trade execution:")
+    click.echo("    1) Manual Confirm — review each trade before it runs")
+    click.echo("    2) Auto-Execute   — optimizer runs trades automatically")
+    exec_input = click.prompt("  Choice", type=click.Choice(list(exec_choices)), show_choices=False, default="1")
+    execution = exec_choices[exec_input]
+
+    click.echo("\n  Summary:")
+    click.echo(f"    Risk:        {risk}")
+    click.echo(f"    Strategy:    {strategy}")
+    click.echo(f"    Sectors:     {', '.join(sectors) if sectors else 'All'}")
+    click.echo(f"    Max pos:     {max_pos}%")
+    click.echo(f"    Rebalance:   {rebalance}")
+    click.echo(f"    Execution:   {execution}\n")
+
+    if click.confirm("  Save this profile?"):
+        save_preferences(
+            risk_tolerance=risk,
+            strategy=strategy,
+            max_position_pct=max_pos,
+            rebalance_frequency=rebalance,
+            trade_execution=execution,
+            sector_focus=sectors,
+        )
+        click.echo("  Profile saved. Run `pmod dashboard` to launch the UI.\n")
+    else:
+        click.echo("  Aborted — no changes saved.\n")
+
+
 @cli.command("dashboard")
 def dashboard() -> None:
     """Launch the graphical dashboard."""

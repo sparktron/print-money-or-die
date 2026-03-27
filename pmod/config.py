@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     polygon_api_key: str = ""
     alpha_vantage_api_key: str = ""
+    fmp_api_key: str = ""
 
     database_url: str = "sqlite:///pmod.db"
 

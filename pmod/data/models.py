@@ -1,6 +1,6 @@
 """SQLAlchemy models for local persistence."""
 
-from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, create_engine, func
+from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -39,6 +39,7 @@ class UserPreference(Base):
         nullable=False,
         default="manual-confirm",
     )
+    sector_focus: str = Column(Text, nullable=True, default="[]")  # type: ignore[assignment]
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
@@ -106,9 +107,21 @@ def get_engine():  # type: ignore[no-untyped-def]
     return create_engine(settings.database_url, echo=False)
 
 
+def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
+    """Apply incremental schema changes to existing databases."""
+    insp = inspect(engine)
+    if "user_preferences" in insp.get_table_names():
+        existing = {c["name"] for c in insp.get_columns("user_preferences")}
+        with engine.connect() as conn:
+            if "sector_focus" not in existing:
+                conn.execute(text("ALTER TABLE user_preferences ADD COLUMN sector_focus TEXT DEFAULT '[]'"))
+                conn.commit()
+
+
 def get_session() -> Session:
     """Return a new database session."""
     engine = get_engine()
     Base.metadata.create_all(engine)
+    _run_migrations(engine)
     factory = sessionmaker(bind=engine)
     return factory()
