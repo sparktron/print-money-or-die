@@ -3,6 +3,8 @@
 from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, create_engine, func
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
+
+
 from pmod.config import get_settings
 
 
@@ -51,6 +53,51 @@ class WatchlistItem(Base):
     reason: str = Column(String(1000), nullable=True)  # type: ignore[assignment]
     momentum_score: float = Column(Float, nullable=True)  # type: ignore[assignment]
     added_at = Column(DateTime, server_default=func.now())
+
+
+class PoliticianTrade(Base):
+    """A disclosed stock trade by a member of Congress."""
+
+    __tablename__ = "politician_trades"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    politician_name: str = Column(String(200), nullable=False)  # type: ignore[assignment]
+    chamber: str = Column(  # type: ignore[assignment]
+        Enum("house", "senate", name="chamber"), nullable=False
+    )
+    party: str = Column(String(10), nullable=True)  # type: ignore[assignment]
+    state: str = Column(String(10), nullable=True)  # type: ignore[assignment]
+    ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+    company_name: str = Column(String(300), nullable=True)  # type: ignore[assignment]
+    trade_type: str = Column(  # type: ignore[assignment]
+        Enum("purchase", "sale", "sale_partial", "exchange", name="trade_type"),
+        nullable=False,
+    )
+    transaction_date: DateTime = Column(DateTime, nullable=True)  # type: ignore[assignment]
+    disclosure_date: DateTime = Column(DateTime, nullable=False)  # type: ignore[assignment]
+    amount_low: int = Column(Integer, nullable=True)  # type: ignore[assignment]
+    amount_high: int = Column(Integer, nullable=True)  # type: ignore[assignment]
+    fetched_at = Column(DateTime, server_default=func.now())
+
+
+class PoliticianSignal(Base):
+    """Aggregated buy/sell signal derived from politician trading activity."""
+
+    __tablename__ = "politician_signals"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+    company_name: str = Column(String(300), nullable=True)  # type: ignore[assignment]
+    signal: str = Column(  # type: ignore[assignment]
+        Enum("strong_buy", "buy", "hold", "sell", name="politician_signal"),
+        nullable=False,
+    )
+    confidence: float = Column(Float, nullable=False)  # 0.0–1.0
+    buy_count: int = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+    sell_count: int = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+    unique_politicians: int = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+    rationale: str = Column(String(1000), nullable=True)  # type: ignore[assignment]
+    generated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 def get_engine():  # type: ignore[no-untyped-def]
