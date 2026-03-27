@@ -15,6 +15,8 @@ def cli() -> None:
         ],
         wrapper_class=structlog.make_filtering_bound_logger(0),
     )
+    from pmod.data.models import init_db
+    init_db()
 
 
 @cli.group()

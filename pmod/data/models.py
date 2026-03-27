@@ -1,9 +1,9 @@
 """SQLAlchemy models for local persistence."""
 
+import functools
+
 from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-
-
 
 from pmod.config import get_settings
 
@@ -102,8 +102,9 @@ class PoliticianSignal(Base):
     generated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+@functools.lru_cache(maxsize=1)
 def get_engine():  # type: ignore[no-untyped-def]
-    """Create a SQLAlchemy engine from settings."""
+    """Return the cached SQLAlchemy engine, creating it on first call."""
     settings = get_settings()
     return create_engine(settings.database_url, echo=False)
 
@@ -126,10 +127,23 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
                 conn.commit()
 
 
-def get_session() -> Session:
-    """Return a new database session."""
+def init_db() -> None:
+    """Create all tables and run incremental migrations.
+
+    Call once at process startup. Safe to call multiple times — SQLAlchemy
+    only creates tables that don't already exist.
+    """
     engine = get_engine()
     Base.metadata.create_all(engine)
     _run_migrations(engine)
-    factory = sessionmaker(bind=engine)
+
+
+def get_session() -> Session:
+    """Return a new database session.
+
+    Callers are responsible for closing the session (use a try/finally or
+    context manager). ``init_db()`` must be called at startup before any
+    session is used.
+    """
+    factory = sessionmaker(bind=get_engine())
     return factory()
