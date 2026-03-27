@@ -104,11 +104,12 @@ def _extract_csrf_and_agree(client: httpx.Client) -> str:
         csrf = m.group(1)
 
     # Submit the agreement form to /search/home/ (not /search/).
-    client.post(
+    agree_resp = client.post(
         _SENATE_HOME_URL,
         data={"prohibition_agreement": "1", "csrfmiddlewaretoken": csrf},
         headers={"Referer": _SENATE_HOME_URL},
     )
+    agree_resp.raise_for_status()
     return client.cookies.get("csrftoken", csrf)
 
 
