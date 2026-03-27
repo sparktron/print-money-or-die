@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-Pull market data from multiple financial APIs. Factor in your personal risk tolerance. Execute trades directly on your Schwab brokerage account. Monitor everything from a real-time dashboard.
+Pull market data from multiple financial APIs. Factor in your personal risk tolerance. Execute trades directly on your Schwab brokerage account. Get AI-powered portfolio advice. Monitor everything from a real-time dashboard.
 
 </div>
 
@@ -19,17 +19,30 @@ Pull market data from multiple financial APIs. Factor in your personal risk tole
 PrintMoneyOrDie (`pmod`) connects to your Charles Schwab account and builds a personalized, AI-driven investment pipeline:
 
 - **Research** — Pulls quotes, history, and news from Polygon.io and Alpha Vantage, then scores tickers on momentum, valuation, and analyst sentiment
-- **Optimize** — Runs mean-variance and risk-parity optimization against your risk profile, sector constraints, and position limits
-- **Trade** — Executes rebalance orders through Schwab's API with mandatory dry-run previews and confirmation prompts
-- **Monitor** — Serves a local Dash/Plotly dashboard with portfolio performance charts, position tables, and a curated watchlist
+- **Optimize** — Runs equal-weight optimization against your risk profile, sector constraints, and position limits — produces a concrete buy/sell diff
+- **Trade** — Places market and limit equity orders through Schwab's API with dry-run previews and confirmation prompts
+- **Advise** — Asks Claude questions about your live portfolio; structured recommendations (new tickers, risk changes, strategy shifts) can be applied with one click
+- **Monitor** — Serves a local Dash/Plotly dashboard with portfolio performance charts, a curated watchlist, congressional trade tracking, and an AI advisor
 
-## Dashboard Preview
+## Dashboard
 
-| Portfolio View | Watchlist |
-|:-:|:-:|
-| Daily P&L, total return, benchmark vs S&P 500 | AI-curated picks with plain-English reasoning |
-| Positions table with cost basis & gain/loss | Momentum scores, valuation metrics, sentiment |
-| Rebalance diff view (before → after) | One-click "Add to Portfolio" or "Ignore" |
+Five tabs, all wired to live Schwab data when connected:
+
+| Tab | What it shows |
+|---|---|
+| **Portfolio** | Daily P&L, total return vs S&P 500, positions table with cost basis and gain/loss, one-click rebalance diff |
+| **Watchlist** | AI-curated picks with plain-English reasoning, momentum scores, valuation and sentiment badges, "Add to Portfolio" trade modal |
+| **Congress Trades** | Recent congressional stock disclosures with buy/sell signals derived from politician trading patterns |
+| **AI Advisor** | Ask Claude anything about your portfolio; Claude responds with analysis and optional actions (add to watchlist, change risk/strategy) |
+| **Settings** | Risk tolerance, strategy, sector constraints, max position size, rebalance frequency, trade execution mode |
+
+### Placing a Trade
+
+**From the Watchlist tab** — click **"Add to Portfolio"** on any card.
+
+**From the Portfolio tab** — click **"Suggest Rebalance"** to run the optimizer, then click **"Execute"** on any row.
+
+Both open the same trade modal: set shares, choose market or limit order, review the estimated total, and click **Confirm Order**. The order goes directly to Schwab.
 
 ## Quick Start
 
@@ -38,6 +51,7 @@ PrintMoneyOrDie (`pmod`) connects to your Charles Schwab account and builds a pe
 - Python 3.10+
 - A [Schwab Developer](https://developer.schwab.com) account (API key + secret)
 - A [Polygon.io](https://polygon.io) API key (free tier works)
+- An [Anthropic](https://console.anthropic.com) API key for the AI Advisor
 - *(Optional)* An [Alpha Vantage](https://www.alphavantage.co) API key
 
 ### Installation
@@ -50,8 +64,6 @@ pip install -e ".[dev]"
 
 ### Configuration
 
-Copy the example env file and fill in your credentials:
-
 ```bash
 cp .env.example .env
 ```
@@ -63,17 +75,20 @@ SCHWAB_CALLBACK_URL=https://127.0.0.1:8182/callback
 POLYGON_API_KEY=your_polygon_key
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_key
 DATABASE_URL=sqlite:///pmod.db
+ANTHROPIC_API_KEY=your_anthropic_key
 ```
 
 > **Security**: `.env` and all token files are gitignored. Never commit credentials.
 
-### Authenticate with Schwab
+### First-time Setup
 
 ```bash
+# Authenticate with Schwab (opens browser once)
 pmod auth login
-```
 
-This opens your browser for Schwab's OAuth2 flow. Tokens are saved locally and auto-refreshed.
+# Set your risk profile and strategy
+pmod setup
+```
 
 ### Launch the Dashboard
 
@@ -81,22 +96,28 @@ This opens your browser for Schwab's OAuth2 flow. Tokens are saved locally and a
 pmod dashboard
 ```
 
-Opens at [http://localhost:8050](http://localhost:8050) with portfolio, watchlist, and settings views.
+Opens at [http://localhost:8050](http://localhost:8050).
 
-## Usage
+## CLI Reference
 
 ```bash
-# Run a research pass — score tickers and update the watchlist
-pmod research run
+# Portfolio
+pmod portfolio status                   # Live positions and balances
+pmod portfolio rebalance --dry-run      # Preview optimizer output, no trades placed
+pmod portfolio rebalance                # Execute rebalance (confirmation prompt per trade)
 
-# View current portfolio and suggested rebalance
-pmod portfolio status
+# Research
+pmod research run                       # Score tickers and refresh watchlist
 
-# Preview a rebalance (no trades placed)
-pmod portfolio rebalance --dry-run
+# Congressional trades
+pmod politicians fetch                  # Pull latest Senate PTR disclosures
+pmod politicians signals                # Generate buy/sell signals from disclosure data
+pmod politicians list                   # Print recent disclosures (--ticker, --days filters)
 
-# Execute the rebalance (confirmation prompt required)
-pmod portfolio rebalance
+# Auth
+pmod auth login                         # Schwab OAuth2 browser flow
+pmod setup                              # Interactive profile setup wizard
+pmod dashboard                          # Launch the web dashboard
 ```
 
 ## Architecture
@@ -107,27 +128,31 @@ pmod/
 ├── config.py            # Settings via pydantic-settings + .env
 ├── auth/schwab.py       # OAuth2 flow + token refresh
 ├── broker/schwab.py     # Order placement, positions, account data
+├── advisor/
+│   └── claude.py        # Claude API integration — portfolio Q&A + strategy actions
 ├── data/
 │   ├── market.py        # Market data ingestion (Polygon, Alpha Vantage)
-│   └── models.py        # SQLAlchemy models (preferences, watchlist)
+│   ├── models.py        # SQLAlchemy models
+│   └── politician_trades.py  # Congressional disclosure ingestion
 ├── research/
 │   ├── signals.py       # Trend analysis + signal generation
-│   └── screener.py      # Ticker filtering + ranking
+│   ├── screener.py      # Ticker filtering + ranking
+│   └── politician_signals.py # Buy/sell signals from politician trades
 ├── optimizer/
-│   └── portfolio.py     # Mean-variance / risk-parity optimization
+│   └── portfolio.py     # Equal-weight rebalance optimization
 ├── preferences/
 │   └── profile.py       # Risk tolerance + strategy management
 ├── dashboard/
-│   ├── app.py           # Dash app setup + tab routing
-│   ├── pages/           # Portfolio, watchlist, settings views
-│   └── components/      # Reusable Plotly components
+│   ├── app.py           # Dash app setup, tab routing, all callbacks
+│   ├── pages/           # Portfolio, watchlist, advisor, congress, settings views
+│   └── components/      # Design tokens + reusable Plotly components
 └── scheduler/
     └── jobs.py          # APScheduler: research, rebalance, token refresh
 ```
 
 ## User Preferences
 
-All preferences persist in SQLite and are editable from the dashboard settings page:
+All preferences persist in SQLite and are editable from the dashboard Settings tab or by running `pmod setup`:
 
 | Setting | Options | Default |
 |---|---|---|
@@ -138,29 +163,25 @@ All preferences persist in SQLite and are editable from the dashboard settings p
 | Rebalance frequency | `manual` · `daily` · `weekly` | `manual` |
 | Trade execution | `manual-confirm` · `auto` | `manual-confirm` |
 
+The AI Advisor can also suggest and apply risk and strategy changes directly from its response.
+
 ## Development
 
 ```bash
-# Run tests
-pytest
-
-# Type checking
-mypy pmod/
-
-# Lint
-ruff check pmod/
-
-# Format
-ruff format pmod/
+pytest          # Run tests
+mypy pmod/      # Type checking
+ruff check pmod/   # Lint
+ruff format pmod/  # Format
 ```
 
 ## Safety & Guardrails
 
-- **Dry-run first** — Every trade path requires `--dry-run` before live execution
-- **Confirmation prompts** — Destructive actions (rebalance, sell-all) always ask before proceeding
+- **Dry-run first** — `pmod portfolio rebalance --dry-run` previews all trades before anything is placed
+- **Confirmation prompts** — Rebalance and other destructive actions always prompt before executing
 - **Rate limiting** — Schwab (120 req/min) and Polygon (5 req/min free tier) limits are respected with backoff
 - **Token management** — Schwab refresh tokens expire in 7 days; the scheduler handles silent re-auth or alerts loudly
 - **Input validation** — All API responses are validated through Pydantic before use
+- **Credentials** — `.env`, token files, and the SQLite DB are gitignored from day one
 
 ## Tech Stack
 
@@ -169,6 +190,7 @@ ruff format pmod/
 | Language | Python 3.10+ |
 | Brokerage | schwab-py (OAuth2 + trading) |
 | Market data | Polygon.io, Alpha Vantage |
+| AI advisor | Anthropic SDK (claude-opus-4-6) |
 | Optimization | SciPy |
 | Dashboard | Dash + Plotly |
 | Scheduling | APScheduler |
