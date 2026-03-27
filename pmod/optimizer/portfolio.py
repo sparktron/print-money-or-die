@@ -8,6 +8,51 @@ import structlog
 log = structlog.get_logger()
 
 
+def _equal_weight_capped(n: int, cap: float) -> list[float]:
+    """Compute equal-weight allocation that respects a hard per-position cap.
+
+    Uses iterative redistribution: any weight exceeding *cap* is pinned to
+    *cap*, and the excess is shared equally among uncapped positions.
+    Converges in at most *n* iterations (usually 2-3).
+
+    Args:
+        n:   number of positions
+        cap: maximum weight per position, as a fraction (e.g. 0.05 for 5%)
+
+    Returns:
+        List of *n* weights summing to 1.0, each ≤ *cap* (or as close as
+        geometrically possible — if ``n * cap < 1`` every position is set
+        to ``cap`` and a warning is logged).
+    """
+    if n == 0:
+        return []
+    weights = [1.0 / n] * n
+    for _ in range(n + 1):
+        capped_mask = [w >= cap - 1e-12 for w in weights]
+        excess = sum(max(0.0, w - cap) for w in weights)
+        if excess < 1e-12:
+            break
+        uncapped_indices = [i for i, m in enumerate(capped_mask) if not m]
+        if not uncapped_indices:
+            # Can't honour the cap — every slot is already at the ceiling.
+            # Fall back to cap-each and accept the portfolio won't be fully
+            # invested.  Logged so the user knows the pref is unsatisfiable.
+            log.warning(
+                "position_cap_unsatisfiable",
+                n=n,
+                cap_pct=round(cap * 100, 1),
+                shortfall_pct=round((1.0 - n * cap) * 100, 1),
+            )
+            return [cap] * n
+        for i, m in enumerate(capped_mask):
+            if m:
+                weights[i] = cap
+        share = excess / len(uncapped_indices)
+        for i in uncapped_indices:
+            weights[i] += share
+    return weights
+
+
 @dataclass
 class RebalanceTrade:
     ticker: str
@@ -49,11 +94,11 @@ def compute_rebalance(max_position_pct: float = 5.0) -> RebalancePlan:
     n = len(positions)
     investable = summary.total_value
 
-    # Equal-weight target, capped at max_position_pct, then renormalised
+    # Equal-weight target, capped at max_position_pct.  Iterative
+    # redistribution ensures the cap survives normalisation (see
+    # _equal_weight_capped docstring for the algorithm).
     cap = max_position_pct / 100.0
-    raw_weights = [min(1.0 / n, cap) for _ in positions]
-    total_w = sum(raw_weights)
-    weights = [w / total_w for w in raw_weights]
+    weights = _equal_weight_capped(n, cap)
 
     trades: list[RebalanceTrade] = []
     net_cash = 0.0

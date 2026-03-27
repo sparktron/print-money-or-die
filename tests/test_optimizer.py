@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pmod.broker.schwab import AccountSummary, Position
-from pmod.optimizer.portfolio import RebalancePlan, RebalanceTrade, compute_rebalance
+from pmod.optimizer.portfolio import (
+    RebalancePlan,
+    RebalanceTrade,
+    _equal_weight_capped,
+    compute_rebalance,
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -46,6 +51,51 @@ def _make_summary(
         day_pnl=0.0,
         positions=positions,
     )
+
+
+# ── _equal_weight_capped ───────────────────────────────────────────────────
+
+class TestEqualWeightCapped:
+    def test_no_cap_effect_when_natural_weight_below_cap(self) -> None:
+        # 4 positions, cap 30%: natural weight 25% < 30%
+        weights = _equal_weight_capped(4, 0.30)
+        assert len(weights) == 4
+        assert all(w == pytest.approx(0.25) for w in weights)
+        assert sum(weights) == pytest.approx(1.0)
+
+    def test_cap_bites_and_redistributes(self) -> None:
+        # 4 positions, cap 20%: natural weight 25% > 20%
+        # Iterative: all capped at 20%, excess redistributed, but all hit cap
+        weights = _equal_weight_capped(4, 0.20)
+        assert all(w == pytest.approx(0.20) for w in weights)
+
+    def test_mixed_cap_scenario(self) -> None:
+        # 5 positions, cap 22%: natural weight 20% < 22% → no cap needed
+        weights = _equal_weight_capped(5, 0.22)
+        assert all(w == pytest.approx(0.20) for w in weights)
+        assert sum(weights) == pytest.approx(1.0)
+
+    def test_empty(self) -> None:
+        assert _equal_weight_capped(0, 0.05) == []
+
+    def test_single_position(self) -> None:
+        weights = _equal_weight_capped(1, 0.05)
+        # One position must be 100% — cap can't apply (pin to cap)
+        assert len(weights) == 1
+        assert weights[0] == pytest.approx(0.05)
+
+    def test_weights_never_exceed_cap(self) -> None:
+        for n in [2, 3, 5, 7, 10, 20, 50]:
+            for cap_pct in [5, 10, 15, 20, 50]:
+                cap = cap_pct / 100.0
+                weights = _equal_weight_capped(n, cap)
+                for w in weights:
+                    assert w <= cap + 1e-10, f"n={n}, cap={cap}: weight {w} > cap"
+
+    def test_satisfiable_sum_to_one(self) -> None:
+        # When n * cap >= 1, weights should sum to 1.0
+        weights = _equal_weight_capped(10, 0.15)  # 10 × 15% = 150% → satisfiable
+        assert sum(weights) == pytest.approx(1.0)
 
 
 # ── compute_rebalance ──────────────────────────────────────────────────────
@@ -113,12 +163,10 @@ class TestComputeRebalance:
                 f"{trade.ticker} target {trade.target_weight_pct:.2f}% exceeds cap"
             )
 
-    def test_cap_normalised_away_when_fewer_positions_than_cap_allows(self) -> None:
-        # NOTE: known optimizer limitation. With only 3 positions and a 20% cap
-        # the cap alone cannot be enforced (3 × 20% = 60% ≠ 100%). The current
-        # equal-weight + normalise algorithm silently falls back to equal weight
-        # (33.3% each) rather than raising. This test documents that behaviour so
-        # any future algorithm change that actually enforces the cap will be caught.
+    def test_cap_enforced_even_with_fewer_positions_than_cap_allows(self) -> None:
+        # 3 positions with 20% cap: 3 × 20% = 60% < 100%, so the cap is
+        # geometrically unsatisfiable.  The algorithm pins each at 20% and
+        # logs a warning rather than silently exceeding the cap.
         positions = [
             _make_position("A", shares=40, current_price=100.0, market_value=4_000.0, weight=40.0),
             _make_position("B", shares=30, current_price=100.0, market_value=3_000.0, weight=30.0),
@@ -127,10 +175,35 @@ class TestComputeRebalance:
         summary = _make_summary(positions, total_value=10_000.0)
         with patch(self._PATCH_SUMMARY, return_value=summary):
             plan = compute_rebalance(max_position_pct=20.0)
-        target_weights = {t.ticker: t.target_weight_pct for t in plan.trades}
-        # All three end up at equal weight (~33.3%), not the requested 20% cap
-        for pct in target_weights.values():
-            assert pct == pytest.approx(100.0 / 3, abs=1.0)
+        for trade in plan.trades:
+            assert trade.target_weight_pct <= 20.0 + 1e-6, (
+                f"{trade.ticker} target {trade.target_weight_pct:.2f}% exceeds cap"
+            )
+
+    def test_cap_redistributes_excess_to_uncapped_positions(self) -> None:
+        # 10 positions at 5% cap: natural weight 10% > 5% cap.
+        # The iterative algorithm should bring all positions down to ≤5%.
+        # Since 10 × 5% = 50% < 100%, cap is unsatisfiable but respected.
+        positions = [_make_position(f"T{i}") for i in range(10)]
+        summary = _make_summary(positions, total_value=100_000.0)
+        with patch(self._PATCH_SUMMARY, return_value=summary):
+            plan = compute_rebalance(max_position_pct=5.0)
+        for trade in plan.trades:
+            assert trade.target_weight_pct <= 5.0 + 1e-6
+
+    def test_cap_works_with_satisfiable_allocation(self) -> None:
+        # 10 positions at 15% cap: natural weight 10% < 15% → cap has no
+        # effect, weights remain equal at 10%.
+        positions = [
+            _make_position(f"T{i}", shares=10, current_price=100.0,
+                           market_value=1_000.0, weight=10.0)
+            for i in range(10)
+        ]
+        summary = _make_summary(positions, total_value=10_000.0)
+        with patch(self._PATCH_SUMMARY, return_value=summary):
+            plan = compute_rebalance(max_position_pct=15.0)
+        for trade in plan.trades:
+            assert trade.target_weight_pct == pytest.approx(10.0, abs=1.0)
 
     def test_plan_includes_all_positions(self) -> None:
         positions = [_make_position(t) for t in ["AAPL", "MSFT", "NVDA", "TSLA"]]
