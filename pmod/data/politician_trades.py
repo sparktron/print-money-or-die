@@ -22,6 +22,7 @@ from pmod.data.models import PoliticianTrade, get_session
 log = structlog.get_logger()
 
 _SENATE_SEARCH_URL = "https://efdsearch.senate.gov/search/"
+_SENATE_HOME_URL = "https://efdsearch.senate.gov/search/home/"
 _SENATE_DATA_URL = "https://efdsearch.senate.gov/search/report/data/"
 _SENATE_REPORT_BASE = "https://efdsearch.senate.gov"
 _SENATE_PTR_REPORT_TYPE = "11"
@@ -82,24 +83,33 @@ def _strip_tags(html: str) -> str:
     return re.sub(r"<[^>]+>", "", html).strip()
 
 
-def _extract_csrf(client: httpx.Client) -> str:
-    """GET the Senate EFD search page and return the CSRF token.
+def _extract_csrf_and_agree(client: httpx.Client) -> str:
+    """Load the Senate EFD home page, submit the terms agreement, and return CSRF.
 
-    Tries the csrftoken cookie first, then falls back to the hidden form field.
+    The site requires POSTing the prohibition agreement to /search/home/ before
+    individual PTR report pages are accessible. Without this step every report
+    URL redirects back to the home page and returns no data.
     """
+    # GET /search/ redirects to /search/home/ where the agreement form lives.
     resp = client.get(_SENATE_SEARCH_URL)
     resp.raise_for_status()
-    # Cookie is the most reliable source
     csrf = client.cookies.get("csrftoken", "")
-    if csrf:
-        return csrf
-    m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', resp.text)
-    if m:
-        return m.group(1)
-    raise RuntimeError(
-        "Could not extract CSRF token from efdsearch.senate.gov — "
-        "the site structure may have changed."
+    if not csrf:
+        m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', resp.text)
+        if not m:
+            raise RuntimeError(
+                "Could not extract CSRF token from efdsearch.senate.gov — "
+                "the site structure may have changed."
+            )
+        csrf = m.group(1)
+
+    # Submit the agreement form to /search/home/ (not /search/).
+    client.post(
+        _SENATE_HOME_URL,
+        data={"prohibition_agreement": "1", "csrfmiddlewaretoken": csrf},
+        headers={"Referer": _SENATE_HOME_URL},
     )
+    return client.cookies.get("csrftoken", csrf)
 
 
 def _search_ptrs(
@@ -140,67 +150,67 @@ def _search_ptrs(
 def _parse_filing_row(row: list[str]) -> tuple[str, str, str | None] | None:
     """Return (senator_name, disclosure_date_str, report_url) from a search row.
 
-    The Senate EFD search result rows look like:
-      [name_cell, status, agreement, report_type, date_cell, ..., view_cell]
-    where cells contain embedded HTML.
+    Actual Senate EFD search result row layout (5 fields):
+      [0] first_name   e.g. "David H"
+      [1] last_name    e.g. "McCormick"
+      [2] full_name    e.g. "McCormick, David H. (Senator)"
+      [3] link_cell    HTML anchor with the PTR report href
+      [4] date         plain text "MM/DD/YYYY"
     """
-    if len(row) < 4:
+    if len(row) < 5:
         return None
-    name = _strip_tags(row[0])
-    # Date is usually in the 4th or 5th column
-    date_str = None
-    for cell in row[3:6]:
-        cleaned = _strip_tags(cell)
-        if re.match(r"\d{2}/\d{2}/\d{4}", cleaned):
-            date_str = cleaned
-            break
-    # Report URL is in the last cell that has an href
-    url = None
-    for cell in reversed(row):
-        m = re.search(r'href=["\']([^"\']+)["\']', cell)
-        if m:
-            path = m.group(1)
-            url = path if path.startswith("http") else _SENATE_REPORT_BASE + path
-            break
+    name = _strip_tags(row[2])
+    date_str = _strip_tags(row[4]).strip()
+    m = re.search(r'href=["\']([^"\']+)["\']', row[3])
+    if not m:
+        return None
+    path = m.group(1)
+    url = path if path.startswith("http") else _SENATE_REPORT_BASE + path
     if not name or not url:
         return None
-    return name, date_str or "", url
+    return name, date_str, url
 
 
 def _parse_ptr_report(html: str, senator: str, disclosure_date: datetime | None, report_url: str = "") -> list[PoliticianTrade]:
     """Parse an individual Senate PTR report page into trade records.
 
-    The report page contains an HTML table with columns:
-    Date | Owner | Ticker | Asset Name | Asset Type | Type | Amount | Comment
+    Actual table column layout (9 fields, 0-indexed):
+      [0] #            row number (skip)
+      [1] Date         transaction date MM/DD/YYYY
+      [2] Owner        "Self" / "Spouse" / "Joint"
+      [3] Ticker       stock symbol or "--" for non-equity assets
+      [4] Asset Name   company / instrument name
+      [5] Asset Type   "Stock", "Municipal Security", etc.
+      [6] Type         "Purchase", "Sale (Full)", "Sale (Partial)", etc.
+      [7] Amount       "$X - $Y" range string
+      [8] Comment
     """
     trades: list[PoliticianTrade] = []
-    # Extract all <tr> blocks
     for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.IGNORECASE):
         cells = [
             _strip_tags(c)
             for c in re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.DOTALL | re.IGNORECASE)
         ]
-        if len(cells) < 7:
+        if len(cells) < 8:
             continue
-        # Skip header-like rows
-        ticker = cells[2].strip().upper()
+        ticker = cells[3].strip().upper()
         if not ticker or ticker in ("--", "N/A", "TICKER", ""):
             continue
-        # Filter to stocks only (cells[4] is asset type)
-        asset_type = cells[4].lower()
+        # Filter to stocks only (cells[5] is asset type)
+        asset_type = cells[5].lower()
         if asset_type and asset_type not in ("stock", "stocks", ""):
             continue
-        trade_type = _normalize_trade_type(cells[5])
+        trade_type = _normalize_trade_type(cells[6])
         if trade_type is None:
             continue
-        tx_date = _parse_date(cells[0])
-        amount_low, amount_high = _parse_amount(cells[6])
+        tx_date = _parse_date(cells[1])
+        amount_low, amount_high = _parse_amount(cells[7])
         trades.append(
             PoliticianTrade(
                 politician_name=senator,
                 chamber="senate",
                 ticker=ticker,
-                company_name=cells[3] or None,
+                company_name=cells[4] or None,
                 trade_type=trade_type,
                 transaction_date=tx_date,
                 disclosure_date=disclosure_date or tx_date,
@@ -221,8 +231,8 @@ def _fetch_senate_trades(days: int = 90, max_filings: int = 300) -> list[Politic
     all_trades: list[PoliticianTrade] = []
 
     with httpx.Client(follow_redirects=True, timeout=30) as client:
-        log.info("fetching Senate EFD CSRF token")
-        csrf = _extract_csrf(client)
+        log.info("fetching Senate EFD CSRF token and submitting agreement")
+        csrf = _extract_csrf_and_agree(client)
 
         start = 0
         length = 100
