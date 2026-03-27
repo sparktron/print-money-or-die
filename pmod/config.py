@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+import functools
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
+@functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return a cached Settings instance."""
+    """Return the cached Settings instance, reading .env once on first call."""
     return Settings()
