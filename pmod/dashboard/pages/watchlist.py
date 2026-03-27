@@ -1,120 +1,112 @@
-"""Curated picks and watchlist view — Bloomberg meets Apple."""
+"""Curated picks and watchlist view — Bloomberg meets Apple.
 
+Reads from the WatchlistItem table first; falls back to demo data when
+the DB is empty (e.g. before the first ``pmod research run``).
+"""
+from __future__ import annotations
+
+import structlog
 from dash import html
 
 from pmod.dashboard.components import COLORS, MONO, section_header, status_badge
 
-# ── Sample watchlist data ─────────────────────────────────────────────────
-_PICKS = [
-    {
-        "ticker": "NVDA",
-        "name": "NVIDIA Corp.",
-        "price": "$924.80",
-        "change": "+3.2%",
-        "change_positive": True,
-        "momentum": 94,
-        "valuation": "Premium",
-        "valuation_variant": "orange",
-        "sentiment": "Very Bullish",
-        "sentiment_variant": "green",
-        "reason": (
-            "Dominant AI/ML chip supplier with 80%+ data center GPU market share. "
-            "Massive earnings beats driven by explosive demand for H100/B100 GPUs. "
-            "Fits your growth strategy with exceptional revenue acceleration."
-        ),
-        "tags": ["AI/ML", "Semiconductors", "Growth"],
-    },
-    {
-        "ticker": "PLTR",
-        "name": "Palantir Technologies",
-        "price": "$24.60",
-        "change": "+1.8%",
-        "change_positive": True,
-        "momentum": 82,
-        "valuation": "Fair",
-        "valuation_variant": "green",
-        "sentiment": "Bullish",
-        "sentiment_variant": "green",
-        "reason": (
-            "Leading AI platform for government and enterprise analytics. "
-            "AIP platform driving commercial segment growth at 40%+ YoY. "
-            "Expanding margins with sticky, high-value contracts."
-        ),
-        "tags": ["AI/ML", "Software", "Defense"],
-    },
-    {
-        "ticker": "AVGO",
-        "name": "Broadcom Inc.",
-        "price": "$168.40",
-        "change": "+0.9%",
-        "change_positive": True,
-        "momentum": 78,
-        "valuation": "Fair",
-        "valuation_variant": "green",
-        "sentiment": "Bullish",
-        "sentiment_variant": "green",
-        "reason": (
-            "Custom AI chip partnerships with major hyperscalers. "
-            "VMware acquisition creates recurring software revenue stream. "
-            "Strong dividend history supports your balanced strategy."
-        ),
-        "tags": ["Semiconductors", "Infrastructure", "Dividend"],
-    },
-    {
-        "ticker": "CRWD",
-        "name": "CrowdStrike Holdings",
-        "price": "$342.10",
-        "change": "-0.4%",
-        "change_positive": False,
-        "momentum": 71,
-        "valuation": "Premium",
-        "valuation_variant": "orange",
-        "sentiment": "Neutral",
-        "sentiment_variant": "neutral",
-        "reason": (
-            "Cybersecurity leader with best-in-class Falcon platform. "
-            "Recovering well from July outage incident with improved processes. "
-            "88% gross retention — extremely sticky enterprise customer base."
-        ),
-        "tags": ["Cybersecurity", "Cloud", "SaaS"],
-    },
-    {
-        "ticker": "LLY",
-        "name": "Eli Lilly & Co.",
-        "price": "$782.50",
-        "change": "+2.1%",
-        "change_positive": True,
-        "momentum": 88,
-        "valuation": "Premium",
-        "valuation_variant": "orange",
-        "sentiment": "Very Bullish",
-        "sentiment_variant": "green",
-        "reason": (
-            "GLP-1 pipeline with Mounjaro/Zepbound driving massive revenue growth. "
-            "Tirzepatide supply ramp-up unlocking TAM worth $100B+. "
-            "Strong momentum score with consistent analyst upgrades."
-        ),
-        "tags": ["Pharma", "GLP-1", "Growth"],
-    },
-    {
-        "ticker": "COIN",
-        "name": "Coinbase Global",
-        "price": "$267.30",
-        "change": "+4.5%",
-        "change_positive": True,
-        "momentum": 76,
-        "valuation": "Fair",
-        "valuation_variant": "green",
-        "sentiment": "Bullish",
-        "sentiment_variant": "green",
-        "reason": (
-            "Dominant US crypto exchange benefiting from Bitcoin ETF volumes. "
-            "Diversifying revenue with staking, Base L2, and institutional custody. "
-            "Positive regulatory tailwinds with increased crypto policy clarity."
-        ),
-        "tags": ["Crypto", "Fintech", "High Volatility"],
-    },
-]
+log = structlog.get_logger()
+
+
+def _load_picks() -> list[dict]:
+    """Load watchlist items from the DB and enrich with live signals.
+
+    Returns a list of pick dicts ready for ``_pick_card()``.  Falls back
+    to a small set of demo picks when the DB is empty.
+    """
+    try:
+        from pmod.data.models import WatchlistItem, get_session
+
+        with get_session() as session:
+            items = session.query(WatchlistItem).order_by(
+                WatchlistItem.momentum_score.desc().nullslast()
+            ).all()
+
+        if not items:
+            return _demo_picks()
+
+        # Build politician signal lookup
+        pol_data: dict[str, dict] = {}
+        try:
+            from pmod.research.politician_signals import get_signals
+            for sig in get_signals():
+                pol_data[sig.ticker] = {
+                    "signal": sig.signal,
+                    "confidence": sig.confidence,
+                }
+        except Exception:
+            pass
+
+        picks: list[dict] = []
+        for item in items:
+            mom = int((item.momentum_score or 0) * 100)
+            mom = max(0, min(100, mom + 50))  # map [-1,1] → [0,100]
+
+            pol = pol_data.get(item.ticker, {})
+            pol_signal = pol.get("signal", "")
+            sentiment_map = {
+                "strong_buy": ("Very Bullish", "green"),
+                "buy": ("Bullish", "green"),
+                "hold": ("Neutral", "neutral"),
+                "sell": ("Bearish", "red"),
+            }
+            sentiment_text, sentiment_var = sentiment_map.get(
+                pol_signal, ("—", "neutral")
+            )
+
+            picks.append({
+                "ticker": item.ticker,
+                "name": item.company_name or item.ticker,
+                "price": "—",
+                "change": "—",
+                "change_positive": True,
+                "momentum": mom,
+                "valuation": "—",
+                "valuation_variant": "neutral",
+                "sentiment": sentiment_text,
+                "sentiment_variant": sentiment_var,
+                "reason": item.reason or "Added to watchlist.",
+                "tags": [],
+            })
+
+        # Try to enrich with live quotes (best-effort, don't block)
+        try:
+            from pmod.data.market import get_quote
+            for pick in picks[:6]:  # limit API calls
+                quote = get_quote(pick["ticker"])
+                if quote:
+                    pick["price"] = f"${quote.price:,.2f}"
+                    sign = "+" if quote.change_pct >= 0 else ""
+                    pick["change"] = f"{sign}{quote.change_pct:.1f}%"
+                    pick["change_positive"] = quote.change_pct >= 0
+        except Exception as exc:
+            log.debug("watchlist_quote_enrich_failed", error=str(exc)[:60])
+
+        return picks
+
+    except Exception as exc:
+        log.warning("watchlist_db_load_failed", error=str(exc)[:80])
+        return _demo_picks()
+
+
+def _demo_picks() -> list[dict]:
+    """Hardcoded demo picks shown before the first research pass."""
+    return [
+        {
+            "ticker": "NVDA", "name": "NVIDIA Corp.",
+            "price": "—", "change": "—", "change_positive": True,
+            "momentum": 85, "valuation": "Premium", "valuation_variant": "orange",
+            "sentiment": "Very Bullish", "sentiment_variant": "green",
+            "reason": "Run `pmod research run` to generate personalised picks. "
+                      "This is demo data showing the card layout.",
+            "tags": ["Demo"],
+        },
+    ]
 
 
 def _momentum_bar(score: int) -> html.Div:
@@ -357,6 +349,27 @@ def _pick_card(pick: dict) -> html.Div:  # type: ignore[type-arg]
 
 def watchlist_layout() -> html.Div:
     """Return the watchlist page layout."""
+    picks = _load_picks()
+
+    # Pull user strategy/risk for the header badges
+    try:
+        from pmod.preferences.profile import load_preferences_dict
+
+        prefs = load_preferences_dict()
+        strategy = prefs.get("strategy", "balanced").capitalize()
+        risk = prefs.get("risk_tolerance", "medium").capitalize()
+    except Exception:
+        strategy, risk = "Balanced", "Medium"
+
+    strategy_variant = {
+        "Growth": "green", "Momentum": "green",
+        "Value": "accent", "Dividend": "accent",
+    }.get(strategy, "neutral")
+    risk_variant = {
+        "Low": "green", "Medium": "orange",
+        "High": "red", "Degen": "red",
+    }.get(risk, "neutral")
+
     return html.Div(
         [
             # Header with count
@@ -364,7 +377,7 @@ def watchlist_layout() -> html.Div:
                 [
                     section_header(
                         "Watchlist",
-                        f"{len(_PICKS)} AI-curated opportunities",
+                        f"{len(picks)} AI-curated opportunities",
                     ),
                     html.Div(
                         [
@@ -372,7 +385,7 @@ def watchlist_layout() -> html.Div:
                                 "fontSize": "12px",
                                 "color": COLORS["text_tertiary"],
                             }),
-                            status_badge("Growth", "green"),
+                            status_badge(strategy, strategy_variant),
                             html.Span(
                                 " | Risk: ",
                                 style={
@@ -381,7 +394,7 @@ def watchlist_layout() -> html.Div:
                                     "marginLeft": "8px",
                                 },
                             ),
-                            status_badge("Medium", "orange"),
+                            status_badge(risk, risk_variant),
                         ],
                         style={
                             "display": "flex",
@@ -393,7 +406,7 @@ def watchlist_layout() -> html.Div:
             ),
             # Cards grid
             html.Div(
-                [_pick_card(pick) for pick in _PICKS],
+                [_pick_card(pick) for pick in picks],
                 style={
                     "display": "grid",
                     "gridTemplateColumns": "repeat(auto-fill, minmax(380px, 1fr))",
