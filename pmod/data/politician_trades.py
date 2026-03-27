@@ -1,33 +1,33 @@
-"""Politician trade data ingestion from Financial Modeling Prep (FMP).
+"""Politician trade data ingestion from official US government sources.
 
-FMP provides free access to House and Senate STOCK Act disclosure data.
-Get a free API key (no credit card) at https://financialmodelingprep.com/developer/docs
+Senate data: scraped from efdsearch.senate.gov (no API key required).
+  - Two-step flow: GET the search page to obtain a CSRF token, then POST
+    to the data endpoint which returns JSON rows of PTR filings.
+  - Each filing is then fetched individually to extract transaction rows
+    from the HTML table (ticker, type, amount, date).
 
-Rate limits: free tier allows ~250 requests/day.
+House data: individual PTR filings are PDFs — not implemented without a
+  PDF-parsing library. Run `pmod politicians fetch` to get Senate data only.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 import structlog
 
-from pmod.config import get_settings
 from pmod.data.models import PoliticianTrade, get_session
 
 log = structlog.get_logger()
 
-_FMP_BASE = "https://financialmodelingprep.com/api/v4"
-_HOUSE_LATEST = _FMP_BASE + "/house-latest-trading"
-_SENATE_LATEST = _FMP_BASE + "/senate-latest-trading"
-# Per-ticker endpoints (used when FMP_API_KEY is set and bulk endpoints are exhausted)
-_HOUSE_BY_TICKER = _FMP_BASE + "/house-trading-rss-feed"
-_SENATE_BY_TICKER = _FMP_BASE + "/senate-trading-rss-feed"
+_SENATE_SEARCH_URL = "https://efdsearch.senate.gov/search/"
+_SENATE_DATA_URL = "https://efdsearch.senate.gov/search/report/data/"
+_SENATE_REPORT_BASE = "https://efdsearch.senate.gov"
+_SENATE_PTR_REPORT_TYPE = "11"
 
-_DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d"]
+_DATE_FORMATS = ["%Y-%m-%d", "%m/%d/%Y", "%Y/%m/%d", "%m/%d/%Y %H:%M:%S"]
 
-# Maps FMP amount strings to (low, high) dollar values
 _AMOUNT_MAP: dict[str, tuple[int, int | None]] = {
     "$1,001 - $15,000": (1_001, 15_000),
     "$15,001 - $50,000": (15_001, 50_000),
@@ -46,9 +46,10 @@ def _parse_date(raw: str | None) -> datetime | None:
     """Try each known date format; return None if all fail."""
     if not raw:
         return None
+    cleaned = raw.strip()
     for fmt in _DATE_FORMATS:
         try:
-            return datetime.strptime(raw.strip(), fmt)
+            return datetime.strptime(cleaned, fmt)
         except ValueError:
             continue
     return None
@@ -59,9 +60,7 @@ def _parse_amount(raw: str | None) -> tuple[int | None, int | None]:
     if not raw:
         return None, None
     cleaned = re.sub(r"\s+", " ", raw.strip())
-    if cleaned in _AMOUNT_MAP:
-        return _AMOUNT_MAP[cleaned]
-    return None, None
+    return _AMOUNT_MAP.get(cleaned, (None, None))
 
 
 def _normalize_trade_type(raw: str) -> str | None:
@@ -78,113 +77,207 @@ def _normalize_trade_type(raw: str) -> str | None:
     return None
 
 
-def _fetch_json(url: str, params: dict[str, str], timeout: int = 30) -> list[dict[str, Any]]:
-    """Fetch JSON from a URL with query params; raise on HTTP errors."""
-    log.info("fetching politician trade data", url=url)
-    resp = httpx.get(url, params=params, timeout=timeout, follow_redirects=True)
-    resp.raise_for_status()
-    data = resp.json()
-    if isinstance(data, dict):
-        # FMP wraps some responses; surface a useful error
-        if "Error Message" in data:
-            raise RuntimeError(f"FMP API error: {data['Error Message']}")
-        return []
-    return data  # type: ignore[return-value]
+def _strip_tags(html: str) -> str:
+    """Remove all HTML tags from a string."""
+    return re.sub(r"<[^>]+>", "", html).strip()
 
 
-def _parse_house_record(record: dict[str, Any]) -> PoliticianTrade | None:
-    """Convert a raw FMP house trading record to a PoliticianTrade."""
-    ticker = (record.get("ticker") or "").strip().upper()
-    if not ticker or ticker in ("--", "N/A", ""):
-        return None
+def _extract_csrf(client: httpx.Client) -> str:
+    """GET the Senate EFD search page and return the CSRF token.
 
-    trade_type = _normalize_trade_type(record.get("type") or "")
-    if trade_type is None:
-        return None
-
-    disclosure_date = _parse_date(record.get("disclosureDate") or record.get("disclosure_date"))
-    if disclosure_date is None:
-        return None
-
-    amount_low, amount_high = _parse_amount(record.get("amount"))
-
-    return PoliticianTrade(
-        politician_name=record.get("representative") or "Unknown",
-        chamber="house",
-        party=record.get("party"),
-        state=(record.get("district") or "")[:2] or None,
-        ticker=ticker,
-        company_name=record.get("assetDescription") or record.get("asset_description"),
-        trade_type=trade_type,
-        transaction_date=_parse_date(record.get("transactionDate") or record.get("transaction_date")),
-        disclosure_date=disclosure_date,
-        amount_low=amount_low,
-        amount_high=amount_high,
-    )
-
-
-def _parse_senate_record(record: dict[str, Any]) -> PoliticianTrade | None:
-    """Convert a raw FMP senate trading record to a PoliticianTrade."""
-    ticker = (record.get("ticker") or "").strip().upper()
-    if not ticker or ticker in ("--", "N/A", ""):
-        return None
-
-    trade_type = _normalize_trade_type(record.get("type") or "")
-    if trade_type is None:
-        return None
-
-    disclosure_date = _parse_date(record.get("disclosureDate") or record.get("disclosure_date"))
-    if disclosure_date is None:
-        return None
-
-    amount_low, amount_high = _parse_amount(record.get("amount"))
-
-    return PoliticianTrade(
-        politician_name=record.get("senator") or record.get("firstName", "") + " " + record.get("lastName", "") or "Unknown",
-        chamber="senate",
-        party=None,
-        state=None,
-        ticker=ticker,
-        company_name=record.get("assetDescription") or record.get("asset_description"),
-        trade_type=trade_type,
-        transaction_date=_parse_date(record.get("transactionDate") or record.get("transaction_date")),
-        disclosure_date=disclosure_date,
-        amount_low=amount_low,
-        amount_high=amount_high,
-    )
-
-
-def fetch_and_store_trades() -> dict[str, int]:
-    """Fetch all congressional trade disclosures via FMP and upsert into the DB.
-
-    Requires FMP_API_KEY to be set in .env.
-    Returns a dict with counts: {"house": N, "senate": M, "errors": K}.
+    Tries the csrftoken cookie first, then falls back to the hidden form field.
     """
-    settings = get_settings()
-    if not settings.fmp_api_key:
-        raise RuntimeError(
-            "FMP_API_KEY is not set. Get a free key at "
-            "https://financialmodelingprep.com/developer/docs and add it to your .env file."
-        )
+    resp = client.get(_SENATE_SEARCH_URL)
+    resp.raise_for_status()
+    # Cookie is the most reliable source
+    csrf = client.cookies.get("csrftoken", "")
+    if csrf:
+        return csrf
+    m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', resp.text)
+    if m:
+        return m.group(1)
+    raise RuntimeError(
+        "Could not extract CSRF token from efdsearch.senate.gov — "
+        "the site structure may have changed."
+    )
 
-    params = {"apikey": settings.fmp_api_key}
+
+def _search_ptrs(
+    client: httpx.Client,
+    csrf: str,
+    start: int = 0,
+    length: int = 100,
+    days: int = 90,
+) -> dict[str, Any]:
+    """POST to Senate EFD to get a page of recent PTR filings."""
+    from_date = (datetime.utcnow() - timedelta(days=days)).strftime(
+        "%m/%d/%Y 00:00:00"
+    )
+    resp = client.post(
+        _SENATE_DATA_URL,
+        data={
+            "start": str(start),
+            "length": str(length),
+            "report_types[]": _SENATE_PTR_REPORT_TYPE,
+            "submitted_start_date": from_date,
+            "submitted_end_date": "",
+            "filer_first_name": "",
+            "filer_last_name": "",
+            "filer_suffix": "",
+            "agreement_number": "",
+            "request_type": "search",
+        },
+        headers={
+            "X-CSRFToken": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": _SENATE_SEARCH_URL,
+        },
+    )
+    resp.raise_for_status()
+    return resp.json()  # type: ignore[no-any-return]
+
+
+def _parse_filing_row(row: list[str]) -> tuple[str, str, str | None] | None:
+    """Return (senator_name, disclosure_date_str, report_url) from a search row.
+
+    The Senate EFD search result rows look like:
+      [name_cell, status, agreement, report_type, date_cell, ..., view_cell]
+    where cells contain embedded HTML.
+    """
+    if len(row) < 4:
+        return None
+    name = _strip_tags(row[0])
+    # Date is usually in the 4th or 5th column
+    date_str = None
+    for cell in row[3:6]:
+        cleaned = _strip_tags(cell)
+        if re.match(r"\d{2}/\d{2}/\d{4}", cleaned):
+            date_str = cleaned
+            break
+    # Report URL is in the last cell that has an href
+    url = None
+    for cell in reversed(row):
+        m = re.search(r'href=["\']([^"\']+)["\']', cell)
+        if m:
+            path = m.group(1)
+            url = path if path.startswith("http") else _SENATE_REPORT_BASE + path
+            break
+    if not name or not url:
+        return None
+    return name, date_str or "", url
+
+
+def _parse_ptr_report(html: str, senator: str, disclosure_date: datetime | None) -> list[PoliticianTrade]:
+    """Parse an individual Senate PTR report page into trade records.
+
+    The report page contains an HTML table with columns:
+    Date | Owner | Ticker | Asset Name | Asset Type | Type | Amount | Comment
+    """
+    trades: list[PoliticianTrade] = []
+    # Extract all <tr> blocks
+    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.IGNORECASE):
+        cells = [
+            _strip_tags(c)
+            for c in re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.DOTALL | re.IGNORECASE)
+        ]
+        if len(cells) < 7:
+            continue
+        # Skip header-like rows
+        ticker = cells[2].strip().upper()
+        if not ticker or ticker in ("--", "N/A", "TICKER", ""):
+            continue
+        # Filter to stocks only (cells[4] is asset type)
+        asset_type = cells[4].lower()
+        if asset_type and asset_type not in ("stock", "stocks", ""):
+            continue
+        trade_type = _normalize_trade_type(cells[5])
+        if trade_type is None:
+            continue
+        tx_date = _parse_date(cells[0])
+        amount_low, amount_high = _parse_amount(cells[6])
+        trades.append(
+            PoliticianTrade(
+                politician_name=senator,
+                chamber="senate",
+                ticker=ticker,
+                company_name=cells[3] or None,
+                trade_type=trade_type,
+                transaction_date=tx_date,
+                disclosure_date=disclosure_date or tx_date,
+                amount_low=amount_low,
+                amount_high=amount_high,
+            )
+        )
+    return trades
+
+
+def _fetch_senate_trades(days: int = 90, max_filings: int = 300) -> list[PoliticianTrade]:
+    """Scrape Senate PTR disclosures from efdsearch.senate.gov.
+
+    Paginates through filings up to max_filings, then fetches each
+    individual report page to extract the transaction rows.
+    """
+    all_trades: list[PoliticianTrade] = []
+
+    with httpx.Client(follow_redirects=True, timeout=30) as client:
+        log.info("fetching Senate EFD CSRF token")
+        csrf = _extract_csrf(client)
+
+        start = 0
+        length = 100
+        total_seen = 0
+
+        while total_seen < max_filings:
+            log.info("searching Senate PTR filings", start=start, days=days)
+            data = _search_ptrs(client, csrf, start=start, length=length, days=days)
+            rows: list[list[str]] = data.get("data", [])
+            if not rows:
+                break
+
+            for row in rows:
+                parsed = _parse_filing_row(row)
+                if parsed is None:
+                    continue
+                senator, date_str, url = parsed
+                disclosure_date = _parse_date(date_str)
+
+                try:
+                    report_resp = client.get(url)
+                    report_resp.raise_for_status()
+                    trades = _parse_ptr_report(report_resp.text, senator, disclosure_date)
+                    all_trades.extend(trades)
+                    log.debug("parsed PTR report", senator=senator, trades=len(trades))
+                except Exception as exc:
+                    log.warning("failed to fetch PTR report", url=url, error=str(exc))
+
+            total_seen += len(rows)
+            if len(rows) < length:
+                break  # last page
+            start += length
+
+    log.info("senate trades fetched", count=len(all_trades))
+    return all_trades
+
+
+def fetch_and_store_trades(days: int = 90) -> dict[str, int]:
+    """Fetch Senate PTR disclosures and store them in the DB.
+
+    House PTR data is not available without PDF parsing (individual filings
+    are published as PDFs only by the House Clerk).
+
+    Returns counts: {"senate": N, "errors": K}.
+    """
     session = get_session()
-    counts: dict[str, int] = {"house": 0, "senate": 0, "errors": 0}
+    counts: dict[str, int] = {"senate": 0, "errors": 0}
 
     try:
-        session.query(PoliticianTrade).delete()
+        trades = _fetch_senate_trades(days=days)
+        session.query(PoliticianTrade).filter(
+            PoliticianTrade.chamber == "senate"
+        ).delete()
 
-        for raw in _fetch_json(_HOUSE_LATEST, params):
-            trade = _parse_house_record(raw)
-            if trade is not None:
-                session.add(trade)
-                counts["house"] += 1
-            else:
-                counts["errors"] += 1
-
-        for raw in _fetch_json(_SENATE_LATEST, params):
-            trade = _parse_senate_record(raw)
-            if trade is not None:
+        for trade in trades:
+            if trade.ticker:
                 session.add(trade)
                 counts["senate"] += 1
             else:
@@ -205,8 +298,6 @@ def get_recent_trades(
     days: int = 90, ticker: str | None = None
 ) -> list[PoliticianTrade]:
     """Return recent trades from the DB, optionally filtered by ticker."""
-    from datetime import timedelta
-
     session = get_session()
     try:
         cutoff = datetime.utcnow() - timedelta(days=days)
@@ -221,12 +312,8 @@ def get_recent_trades(
 
 
 def get_top_tickers(days: int = 90, limit: int = 20) -> list[dict[str, Any]]:
-    """Return the most-traded tickers by politicians in the given window.
-
-    Each entry: {"ticker": str, "buy_count": int, "sell_count": int, "net": int}.
-    """
+    """Return the most-traded tickers by politicians in the given window."""
     from collections import defaultdict
-    from datetime import timedelta
 
     session = get_session()
     try:

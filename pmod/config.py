@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     polygon_api_key: str = ""
     alpha_vantage_api_key: str = ""
-    fmp_api_key: str = ""  # Financial Modeling Prep — congressional trade data
 
     database_url: str = "sqlite:///pmod.db"
 

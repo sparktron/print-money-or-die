@@ -85,11 +85,11 @@ def politicians_fetch() -> None:
     """Fetch the latest congressional trade disclosures and store them."""
     from pmod.data.politician_trades import fetch_and_store_trades
 
-    click.echo("Fetching congressional trade disclosures…")
+    click.echo("Fetching Senate PTR disclosures from efdsearch.senate.gov…")
+    click.echo("(House PTR data not yet available — individual filings are PDFs only)")
     counts = fetch_and_store_trades()
     click.echo(
-        f"Done — House: {counts['house']}, Senate: {counts['senate']}, "
-        f"Skipped: {counts['errors']}"
+        f"Done — Senate: {counts['senate']}, Skipped: {counts['errors']}"
     )
 
 

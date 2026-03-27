@@ -9,8 +9,7 @@ from pmod.data.politician_trades import (
     _normalize_trade_type,
     _parse_amount,
     _parse_date,
-    _parse_house_record,
-    _parse_senate_record,
+    _parse_filing_row,
     get_top_tickers,
 )
 from pmod.research.politician_signals import (
@@ -84,82 +83,39 @@ class TestNormalizeTradeType:
         assert _normalize_trade_type("Transfer") is None
 
 
-class TestParseHouseRecord:
-    def _valid_record(self) -> dict:
-        return {
-            "disclosure_date": "2024-03-15",
-            "transaction_date": "2024-03-10",
-            "representative": "Rep. Jane Smith",
-            "party": "D",
-            "district": "NY12",
-            "ticker": "AAPL",
-            "asset_description": "Apple Inc.",
-            "type": "Purchase",
-            "amount": "$15,001 - $50,000",
-        }
+class TestParseFilingRow:
+    def _html_row(self, name: str = "Smith, John", date: str = "03/15/2024", url_path: str = "/search/view/ptr/abc123/") -> list[str]:
+        return [
+            f'<a href="/search/view/annual/xyz/">{name}</a>',
+            "Senator",
+            "Annual",
+            f'<td>{date}</td>',
+            "Active",
+            f'<a href="{url_path}">View Report</a>',
+        ]
 
-    def test_valid_record_parses(self) -> None:
-        record = self._valid_record()
-        trade = _parse_house_record(record)
-        assert trade is not None
-        assert trade.ticker == "AAPL"
-        assert trade.chamber == "house"
-        assert trade.trade_type == "purchase"
-        assert trade.amount_low == 15_001
-        assert trade.amount_high == 50_000
-        assert trade.politician_name == "Rep. Jane Smith"
+    def test_extracts_name_and_url(self) -> None:
+        row = self._html_row()
+        result = _parse_filing_row(row)
+        assert result is not None
+        name, _, url = result
+        assert name == "Smith, John"
+        assert "abc123" in url
 
-    def test_missing_ticker_returns_none(self) -> None:
-        record = self._valid_record()
-        record["ticker"] = "--"
-        assert _parse_house_record(record) is None
+    def test_relative_url_becomes_absolute(self) -> None:
+        row = self._html_row(url_path="/search/view/ptr/abc/")
+        result = _parse_filing_row(row)
+        assert result is not None
+        _, _, url = result
+        assert url.startswith("https://efdsearch.senate.gov")
 
-    def test_empty_ticker_returns_none(self) -> None:
-        record = self._valid_record()
-        record["ticker"] = ""
-        assert _parse_house_record(record) is None
+    def test_empty_row_returns_none(self) -> None:
+        assert _parse_filing_row([]) is None
+        assert _parse_filing_row(["cell"]) is None
 
-    def test_unknown_trade_type_returns_none(self) -> None:
-        record = self._valid_record()
-        record["type"] = "Transfer"
-        assert _parse_house_record(record) is None
-
-    def test_missing_disclosure_date_returns_none(self) -> None:
-        record = self._valid_record()
-        record["disclosure_date"] = "not-a-date"
-        assert _parse_house_record(record) is None
-
-    def test_ticker_uppercased(self) -> None:
-        record = self._valid_record()
-        record["ticker"] = "aapl"
-        trade = _parse_house_record(record)
-        assert trade is not None
-        assert trade.ticker == "AAPL"
-
-
-class TestParseSenateRecord:
-    def _valid_record(self) -> dict:
-        return {
-            "disclosure_date": "2024-04-01",
-            "transaction_date": "2024-03-28",
-            "senator": "Sen. John Doe",
-            "ticker": "MSFT",
-            "asset_description": "Microsoft Corporation",
-            "type": "Purchase",
-            "amount": "$100,001 - $250,000",
-        }
-
-    def test_valid_record_parses(self) -> None:
-        trade = _parse_senate_record(self._valid_record())
-        assert trade is not None
-        assert trade.ticker == "MSFT"
-        assert trade.chamber == "senate"
-        assert trade.politician_name == "Sen. John Doe"
-
-    def test_missing_ticker_returns_none(self) -> None:
-        record = self._valid_record()
-        record["ticker"] = "N/A"
-        assert _parse_senate_record(record) is None
+    def test_row_without_url_returns_none(self) -> None:
+        row = ["No Link Here", "Senator", "PTR", "03/15/2024"]
+        assert _parse_filing_row(row) is None
 
 
 # ── Signal generation ──────────────────────────────────────────────────────
