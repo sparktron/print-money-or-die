@@ -279,10 +279,9 @@ def fetch_and_store_trades(days: int = 90) -> dict[str, int]:
 
     Returns counts: {"senate": N, "errors": K}.
     """
-    session = get_session()
     counts: dict[str, int] = {"senate": 0, "errors": 0}
 
-    try:
+    with get_session() as session:
         trades = _fetch_senate_trades(days=days)
         session.query(PoliticianTrade).filter(
             PoliticianTrade.chamber == "senate"
@@ -295,13 +294,7 @@ def fetch_and_store_trades(days: int = 90) -> dict[str, int]:
             else:
                 counts["errors"] += 1
 
-        session.commit()
         log.info("politician trades stored", **counts)
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
     return counts
 
@@ -310,8 +303,7 @@ def get_recent_trades(
     days: int = 90, ticker: str | None = None
 ) -> list[PoliticianTrade]:
     """Return recent trades from the DB, optionally filtered by ticker."""
-    session = get_session()
-    try:
+    with get_session() as session:
         cutoff = datetime.utcnow() - timedelta(days=days)
         query = session.query(PoliticianTrade).filter(
             PoliticianTrade.disclosure_date >= cutoff
@@ -319,24 +311,19 @@ def get_recent_trades(
         if ticker:
             query = query.filter(PoliticianTrade.ticker == ticker.upper())
         return query.order_by(PoliticianTrade.disclosure_date.desc()).all()
-    finally:
-        session.close()
 
 
 def get_top_tickers(days: int = 90, limit: int = 20) -> list[dict[str, Any]]:
     """Return the most-traded tickers by politicians in the given window."""
     from collections import defaultdict
 
-    session = get_session()
-    try:
+    with get_session() as session:
         cutoff = datetime.utcnow() - timedelta(days=days)
         trades = (
             session.query(PoliticianTrade)
             .filter(PoliticianTrade.disclosure_date >= cutoff)
             .all()
         )
-    finally:
-        session.close()
 
     counts: dict[str, dict[str, int]] = defaultdict(
         lambda: {"buy_count": 0, "sell_count": 0}
@@ -365,14 +352,11 @@ def get_all_politician_summaries(days: int = 365) -> list[dict]:
     """Return each unique politician with aggregate trade stats, sorted by trade count."""
     from collections import defaultdict
 
-    session = get_session()
-    try:
+    with get_session() as session:
         cutoff = datetime.utcnow() - timedelta(days=days)
         trades = session.query(PoliticianTrade).filter(
             PoliticianTrade.disclosure_date >= cutoff
         ).all()
-    finally:
-        session.close()
 
     stats: dict[str, dict] = defaultdict(lambda: {
         "buy_count": 0, "sell_count": 0, "tickers": set(),
@@ -411,8 +395,7 @@ def get_all_politician_summaries(days: int = 365) -> list[dict]:
 
 def get_politician_trades_history(name: str, days: int = 730) -> list[PoliticianTrade]:
     """Return all trades for a specific politician, newest first."""
-    session = get_session()
-    try:
+    with get_session() as session:
         cutoff = datetime.utcnow() - timedelta(days=days)
         return (
             session.query(PoliticianTrade)
@@ -423,14 +406,11 @@ def get_politician_trades_history(name: str, days: int = 730) -> list[Politician
             .order_by(PoliticianTrade.disclosure_date.desc())
             .all()
         )
-    finally:
-        session.close()
 
 
 def get_politicians_for_ticker(ticker: str, days: int = 365) -> list[dict]:
     """Return every trade on a ticker with politician details, newest first."""
-    session = get_session()
-    try:
+    with get_session() as session:
         cutoff = datetime.utcnow() - timedelta(days=days)
         trades = (
             session.query(PoliticianTrade)
@@ -441,8 +421,6 @@ def get_politicians_for_ticker(ticker: str, days: int = 365) -> list[dict]:
             .order_by(PoliticianTrade.disclosure_date.desc())
             .all()
         )
-    finally:
-        session.close()
 
     results = []
     for t in trades:

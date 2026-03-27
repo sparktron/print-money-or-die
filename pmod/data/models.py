@@ -1,6 +1,8 @@
 """SQLAlchemy models for local persistence."""
 
 import functools
+from contextlib import contextmanager
+from typing import Generator
 
 from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -138,12 +140,26 @@ def init_db() -> None:
     _run_migrations(engine)
 
 
-def get_session() -> Session:
-    """Return a new database session.
+@contextmanager
+def get_session() -> Generator[Session, None, None]:
+    """Yield a database session with auto-commit / rollback / close.
 
-    Callers are responsible for closing the session (use a try/finally or
-    context manager). ``init_db()`` must be called at startup before any
-    session is used.
+    Usage::
+
+        with get_session() as session:
+            session.query(...)
+
+    On normal exit the session is committed. On exception it is rolled
+    back. In either case the session is closed.
+    ``init_db()`` must be called at startup before any session is used.
     """
     factory = sessionmaker(bind=get_engine())
-    return factory()
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

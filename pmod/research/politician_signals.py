@@ -142,11 +142,10 @@ def generate_signals(window_days: int = 90, min_trades: int = 2) -> list[Politic
     Returns:
         The list of generated PoliticianSignal objects.
     """
-    session = get_session()
     now = datetime.utcnow()
     cutoff = now - timedelta(days=window_days)
 
-    try:
+    with get_session() as session:
         trades = (
             session.query(PoliticianTrade)
             .filter(PoliticianTrade.disclosure_date >= cutoff)
@@ -183,20 +182,13 @@ def generate_signals(window_days: int = 90, min_trades: int = 2) -> list[Politic
             session.add(row)
             signals.append(row)
 
-        session.commit()
         log.info("politician signals generated", count=len(signals))
         return signals
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
 def get_signals(signal_type: str | None = None) -> list[PoliticianSignal]:
     """Load persisted signals, optionally filtered by type."""
-    session = get_session()
-    try:
+    with get_session() as session:
         q = session.query(PoliticianSignal)
         if signal_type:
             q = q.filter(PoliticianSignal.signal == signal_type)
@@ -207,5 +199,3 @@ def get_signals(signal_type: str | None = None) -> list[PoliticianSignal]:
             )
             .all()
         )
-    finally:
-        session.close()

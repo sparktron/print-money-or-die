@@ -21,11 +21,8 @@ _DEFAULTS: dict = {
 
 def get_preferences() -> UserPreference | None:
     """Return the current user preference record, or None if not yet set up."""
-    session = get_session()
-    try:
+    with get_session() as session:
         return session.query(UserPreference).first()
-    finally:
-        session.close()
 
 
 def has_completed_setup() -> bool:
@@ -60,8 +57,7 @@ def save_preferences(
     sector_focus: list[str] | None = None,
 ) -> UserPreference:
     """Upsert the user preference record."""
-    session = get_session()
-    try:
+    with get_session() as session:
         prefs = session.query(UserPreference).first()
         if prefs is None:
             prefs = UserPreference()
@@ -72,7 +68,6 @@ def save_preferences(
         prefs.rebalance_frequency = rebalance_frequency
         prefs.trade_execution = trade_execution
         prefs.sector_focus = json.dumps(sector_focus or [])
-        session.commit()
         log.info(
             "preferences_saved",
             risk=risk_tolerance,
@@ -82,5 +77,3 @@ def save_preferences(
             execution=trade_execution,
         )
         return prefs
-    finally:
-        session.close()

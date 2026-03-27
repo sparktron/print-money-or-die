@@ -145,12 +145,9 @@ def _get_portfolio_context() -> dict:
 
     try:
         from pmod.data.models import WatchlistItem, get_session
-        session = get_session()
-        try:
+        with get_session() as session:
             items = session.query(WatchlistItem).all()
             context["watchlist"] = [item.ticker for item in items]
-        finally:
-            session.close()
     except Exception as exc:
         log.warning("advisor_watchlist_fetch_failed", error=str(exc))
 

@@ -904,8 +904,7 @@ def create_app() -> dash.Dash:
 
         try:
             from pmod.data.models import WatchlistItem, get_session
-            session = get_session()
-            try:
+            with get_session() as session:
                 existing = session.query(WatchlistItem).filter_by(ticker=ticker).first()
                 if not existing:
                     session.add(WatchlistItem(
@@ -913,9 +912,6 @@ def create_app() -> dash.Dash:
                         company_name=ticker,
                         reason=reason,
                     ))
-                    session.commit()
-            finally:
-                session.close()
             return "✓ Added", True
         except Exception as exc:
             return f"Error: {str(exc)[:40]}", False
