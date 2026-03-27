@@ -38,6 +38,45 @@ def run_oauth_flow() -> Client:
     return client
 
 
+def auth_status() -> dict:
+    """Return a dict describing the current Schwab auth state.
+
+    Keys:
+        connected (bool): True if a usable token exists.
+        reason (str): Human-readable status line.
+    """
+    import json
+    import time
+
+    settings = get_settings()
+    path = settings.schwab_token_path
+
+    if not settings.schwab_app_key or not settings.schwab_app_secret:
+        return {"connected": False, "reason": "Credentials not set in .env"}
+
+    if not path.exists():
+        return {"connected": False, "reason": "Run `pmod auth login` to connect"}
+
+    try:
+        data = json.loads(path.read_text())
+        creation_ts: float = float(data.get("creation_timestamp", 0))
+        token = data.get("token", {})
+        access_expires_at: float = float(token.get("expires_at", 0))
+
+        # Schwab refresh tokens expire after 7 days
+        refresh_expires_at = creation_ts + 7 * 24 * 3600
+        now = time.time()
+
+        if now > refresh_expires_at:
+            return {"connected": False, "reason": "Refresh token expired — run `pmod auth login`"}
+        if now > access_expires_at:
+            return {"connected": True, "reason": "Connected (access token will auto-refresh)"}
+        return {"connected": True, "reason": "Connected"}
+    except Exception as exc:
+        log.warning("auth_status parse error", error=str(exc))
+        return {"connected": False, "reason": "Token file unreadable — run `pmod auth login`"}
+
+
 def get_client() -> Client:
     """Return an authenticated Schwab client, using cached tokens when available."""
     settings = get_settings()

@@ -8,6 +8,30 @@ from dash import dcc, html
 from pmod.dashboard.components import COLORS, FONT, MONO, section_header, status_badge
 from pmod.preferences.profile import load_preferences_dict
 
+
+def _connection_statuses() -> dict:
+    """Return live connection status for each integration."""
+    from pmod.auth.schwab import auth_status
+    from pmod.config import get_settings
+
+    settings = get_settings()
+    schwab = auth_status()
+
+    polygon_ok = bool(settings.polygon_api_key)
+    av_ok = bool(settings.alpha_vantage_api_key)
+
+    return {
+        "schwab": schwab,
+        "polygon": {
+            "connected": polygon_ok,
+            "reason": "API key configured" if polygon_ok else "Set POLYGON_API_KEY in .env",
+        },
+        "alpha_vantage": {
+            "connected": av_ok,
+            "reason": "API key configured" if av_ok else "Set ALPHA_VANTAGE_API_KEY in .env",
+        },
+    }
+
 # ── Human-readable label maps ──────────────────────────────────────────────
 
 _RISK_LABELS = {
@@ -33,9 +57,10 @@ _EXEC_VARIANT = {"manual-confirm": "green", "auto": "orange"}
 # ── Layout helpers ─────────────────────────────────────────────────────────
 
 
-def _connection_card(name: str, description: str, connected: bool) -> html.Div:
-    dot_color = COLORS["green"] if connected else COLORS["text_tertiary"]
-    status_text = "Connected" if connected else "Not configured"
+def _connection_card(name: str, description: str, connected: bool, reason: str = "") -> html.Div:
+    dot_color = COLORS["green"] if connected else COLORS["red"]
+    status_text = reason if reason else ("Connected" if connected else "Not configured")
+    status_color = COLORS["green"] if connected else COLORS["text_secondary"]
     return html.Div(
         [
             html.Div(
@@ -53,9 +78,12 @@ def _connection_card(name: str, description: str, connected: bool) -> html.Div:
                 [
                     html.Span(style={
                         "width": "8px", "height": "8px", "borderRadius": "50%",
-                        "background": dot_color, "display": "inline-block", "marginRight": "8px",
+                        "background": dot_color, "display": "inline-block",
+                        "marginRight": "8px", "flexShrink": "0",
+                        # Pulse animation on connected
+                        "boxShadow": f"0 0 0 2px {COLORS['green_bg']}" if connected else "none",
                     }),
-                    html.Span(status_text, style={"fontSize": "13px", "color": COLORS["text_secondary"]}),
+                    html.Span(status_text, style={"fontSize": "13px", "color": status_color}),
                 ],
                 style={"display": "flex", "alignItems": "center"},
             ),
@@ -156,6 +184,7 @@ def settings_layout() -> html.Div:
     sectors = json.loads(prefs.get("sector_focus", "[]"))
     max_pos = prefs["max_position_pct"]
     max_pos_label = f"{int(max_pos)}%" if max_pos == int(max_pos) else f"{max_pos}%"
+    conn = _connection_statuses()
 
     return html.Div(
         [
@@ -163,9 +192,24 @@ def settings_layout() -> html.Div:
             section_header("Connections", "API integrations"),
             html.Div(
                 [
-                    _connection_card("Charles Schwab", "Brokerage account for live trading and portfolio data", False),
-                    _connection_card("Polygon.io", "Real-time and historical market data", False),
-                    _connection_card("Alpha Vantage", "Fundamental data, earnings, and news", False),
+                    _connection_card(
+                        "Charles Schwab",
+                        "Brokerage account for live trading and portfolio data",
+                        conn["schwab"]["connected"],
+                        conn["schwab"]["reason"],
+                    ),
+                    _connection_card(
+                        "Polygon.io",
+                        "Real-time and historical market data",
+                        conn["polygon"]["connected"],
+                        conn["polygon"]["reason"],
+                    ),
+                    _connection_card(
+                        "Alpha Vantage",
+                        "Fundamental data, earnings, and news",
+                        conn["alpha_vantage"]["connected"],
+                        conn["alpha_vantage"]["reason"],
+                    ),
                 ],
                 style={
                     "background": COLORS["surface"], "border": f"1px solid {COLORS['border']}",
@@ -358,14 +402,18 @@ def settings_layout() -> html.Div:
             # ── Footer ────────────────────────────────────────────────────
             html.Div(
                 [
-                    html.Span("Run ", style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
+                    html.Span("Re-run the onboarding wizard: ", style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
                     html.Code("pmod setup", style={
                         "fontSize": "12px", "color": COLORS["accent"],
                         "fontFamily": MONO, "background": COLORS["surface_elevated"],
                         "padding": "2px 8px", "borderRadius": "4px",
                     }),
-                    html.Span(" to re-run the full onboarding wizard",
-                              style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
+                    html.Span("  ·  Connect Schwab: ", style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
+                    html.Code("pmod auth login", style={
+                        "fontSize": "12px", "color": COLORS["accent"],
+                        "fontFamily": MONO, "background": COLORS["surface_elevated"],
+                        "padding": "2px 8px", "borderRadius": "4px",
+                    }),
                 ],
                 style={"textAlign": "center", "marginTop": "8px"},
             ),
