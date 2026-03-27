@@ -310,6 +310,46 @@ def create_app() -> dash.Dash:
     def render_wizard_step(state: dict) -> html.Div:
         return wizard_step_layout(state)
 
+    # ── Congress detail drawer ─────────────────────────────────────────────
+
+    @app.callback(
+        Output("congress-detail-container", "style"),
+        Output("congress-panel-title", "children"),
+        Output("congress-panel-body", "children"),
+        Input({"type": "pol-btn", "name": ALL}, "n_clicks"),
+        Input({"type": "ticker-btn", "ticker": ALL}, "n_clicks"),
+        Input("congress-panel-close", "n_clicks"),
+        Input("congress-panel-backdrop", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def handle_congress_panel(
+        pol_clicks: list[int],
+        ticker_clicks: list[int],
+        _close: int,
+        _backdrop: int,
+    ) -> tuple:
+        from pmod.dashboard.pages.politician_trades import render_politician_detail, render_ticker_detail
+
+        hidden = {"display": "none"}
+        visible = {"display": "block"}
+        trigger = ctx.triggered_id
+
+        if trigger in ("congress-panel-close", "congress-panel-backdrop"):
+            return hidden, no_update, no_update
+
+        if not any(pol_clicks) and not any(ticker_clicks):
+            return no_update, no_update, no_update
+
+        if isinstance(trigger, dict) and trigger.get("type") == "pol-btn":
+            name: str = trigger["name"]
+            return visible, name, render_politician_detail(name)
+
+        if isinstance(trigger, dict) and trigger.get("type") == "ticker-btn":
+            ticker: str = trigger["ticker"]
+            return visible, ticker, render_ticker_detail(ticker)
+
+        return no_update, no_update, no_update
+
     # ── Wizard: complete setup ─────────────────────────────────────────────
 
     @app.callback(

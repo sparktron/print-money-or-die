@@ -167,7 +167,7 @@ def _parse_filing_row(row: list[str]) -> tuple[str, str, str | None] | None:
     return name, date_str or "", url
 
 
-def _parse_ptr_report(html: str, senator: str, disclosure_date: datetime | None) -> list[PoliticianTrade]:
+def _parse_ptr_report(html: str, senator: str, disclosure_date: datetime | None, report_url: str = "") -> list[PoliticianTrade]:
     """Parse an individual Senate PTR report page into trade records.
 
     The report page contains an HTML table with columns:
@@ -206,6 +206,7 @@ def _parse_ptr_report(html: str, senator: str, disclosure_date: datetime | None)
                 disclosure_date=disclosure_date or tx_date,
                 amount_low=amount_low,
                 amount_high=amount_high,
+                report_url=report_url or None,
             )
         )
     return trades
@@ -244,7 +245,7 @@ def _fetch_senate_trades(days: int = 90, max_filings: int = 300) -> list[Politic
                 try:
                     report_resp = client.get(url)
                     report_resp.raise_for_status()
-                    trades = _parse_ptr_report(report_resp.text, senator, disclosure_date)
+                    trades = _parse_ptr_report(report_resp.text, senator, disclosure_date, report_url=url)
                     all_trades.extend(trades)
                     log.debug("parsed PTR report", senator=senator, trades=len(trades))
                 except Exception as exc:
@@ -347,3 +348,107 @@ def get_top_tickers(days: int = 90, limit: int = 20) -> list[dict[str, Any]]:
     ]
     ranked.sort(key=lambda x: x["buy_count"] + x["sell_count"], reverse=True)
     return ranked[:limit]
+
+
+def get_all_politician_summaries(days: int = 365) -> list[dict]:
+    """Return each unique politician with aggregate trade stats, sorted by trade count."""
+    from collections import defaultdict
+
+    session = get_session()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        trades = session.query(PoliticianTrade).filter(
+            PoliticianTrade.disclosure_date >= cutoff
+        ).all()
+    finally:
+        session.close()
+
+    stats: dict[str, dict] = defaultdict(lambda: {
+        "buy_count": 0, "sell_count": 0, "tickers": set(),
+        "chamber": "", "party": "", "state": "", "latest_date": None,
+    })
+    for t in trades:
+        s = stats[t.politician_name]
+        s["chamber"] = t.chamber or s["chamber"]
+        s["party"] = t.party or s["party"]
+        s["state"] = t.state or s["state"]
+        if t.trade_type == "purchase":
+            s["buy_count"] += 1
+        elif t.trade_type in ("sale", "sale_partial"):
+            s["sell_count"] += 1
+        s["tickers"].add(t.ticker)
+        if t.disclosure_date and (s["latest_date"] is None or t.disclosure_date > s["latest_date"]):
+            s["latest_date"] = t.disclosure_date
+
+    results = [
+        {
+            "name": name,
+            "chamber": s["chamber"],
+            "party": s["party"],
+            "state": s["state"],
+            "buy_count": s["buy_count"],
+            "sell_count": s["sell_count"],
+            "total_trades": s["buy_count"] + s["sell_count"],
+            "unique_tickers": len(s["tickers"]),
+            "latest_date": s["latest_date"],
+        }
+        for name, s in stats.items()
+    ]
+    results.sort(key=lambda x: x["total_trades"], reverse=True)
+    return results
+
+
+def get_politician_trades_history(name: str, days: int = 730) -> list[PoliticianTrade]:
+    """Return all trades for a specific politician, newest first."""
+    session = get_session()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        return (
+            session.query(PoliticianTrade)
+            .filter(
+                PoliticianTrade.politician_name == name,
+                PoliticianTrade.disclosure_date >= cutoff,
+            )
+            .order_by(PoliticianTrade.disclosure_date.desc())
+            .all()
+        )
+    finally:
+        session.close()
+
+
+def get_politicians_for_ticker(ticker: str, days: int = 365) -> list[dict]:
+    """Return every trade on a ticker with politician details, newest first."""
+    session = get_session()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        trades = (
+            session.query(PoliticianTrade)
+            .filter(
+                PoliticianTrade.ticker == ticker.upper(),
+                PoliticianTrade.disclosure_date >= cutoff,
+            )
+            .order_by(PoliticianTrade.disclosure_date.desc())
+            .all()
+        )
+    finally:
+        session.close()
+
+    results = []
+    for t in trades:
+        if t.amount_low and t.amount_high:
+            amount = f"${t.amount_low:,} – ${t.amount_high:,}"
+        elif t.amount_low:
+            amount = f"${t.amount_low:,}+"
+        else:
+            amount = "Undisclosed"
+        results.append({
+            "politician_name": t.politician_name,
+            "chamber": t.chamber or "",
+            "party": t.party or "",
+            "state": t.state or "",
+            "trade_type": t.trade_type,
+            "disclosure_date": t.disclosure_date.strftime("%Y-%m-%d") if t.disclosure_date else "N/A",
+            "amount": amount,
+            "report_url": t.report_url or "",
+        })
+    return results

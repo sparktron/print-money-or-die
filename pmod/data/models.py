@@ -78,6 +78,7 @@ class PoliticianTrade(Base):
     disclosure_date: DateTime = Column(DateTime, nullable=False)  # type: ignore[assignment]
     amount_low: int = Column(Integer, nullable=True)  # type: ignore[assignment]
     amount_high: int = Column(Integer, nullable=True)  # type: ignore[assignment]
+    report_url: str = Column(String(500), nullable=True)  # type: ignore[assignment]
     fetched_at = Column(DateTime, server_default=func.now())
 
 
@@ -115,6 +116,13 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
         with engine.connect() as conn:
             if "sector_focus" not in existing:
                 conn.execute(text("ALTER TABLE user_preferences ADD COLUMN sector_focus TEXT DEFAULT '[]'"))
+                conn.commit()
+
+    if "politician_trades" in insp.get_table_names():
+        existing = {c["name"] for c in insp.get_columns("politician_trades")}
+        with engine.connect() as conn:
+            if "report_url" not in existing:
+                conn.execute(text("ALTER TABLE politician_trades ADD COLUMN report_url VARCHAR(500)"))
                 conn.commit()
 
 
