@@ -132,7 +132,7 @@ def _trade_modal() -> html.Div:
         "borderRadius": "10px",
         "color": COLORS["text_primary"],
         "fontSize": "14px",
-        "fontFamily": COLORS.get("font", "inherit"),
+        "fontFamily": FONT,
         "outline": "none",
     }
     label_style = {
