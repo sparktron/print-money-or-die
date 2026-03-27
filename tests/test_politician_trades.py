@@ -84,14 +84,28 @@ class TestNormalizeTradeType:
 
 
 class TestParseFilingRow:
-    def _html_row(self, name: str = "Smith, John", date: str = "03/15/2024", url_path: str = "/search/view/ptr/abc123/") -> list[str]:
+    """Tests for _parse_filing_row using the actual 5-field Senate EFD row format.
+
+    Row layout (per the function docstring):
+      [0] first_name   e.g. "David H"
+      [1] last_name    e.g. "McCormick"
+      [2] full_name    e.g. "McCormick, David H. (Senator)"  — plain text used for name
+      [3] link_cell    HTML anchor containing the PTR report href
+      [4] date         plain text "MM/DD/YYYY"
+    """
+
+    def _html_row(
+        self,
+        full_name: str = "Smith, John (Senator)",
+        date: str = "03/15/2024",
+        url_path: str = "/search/view/ptr/abc123/",
+    ) -> list[str]:
         return [
-            f'<a href="/search/view/annual/xyz/">{name}</a>',
-            "Senator",
-            "Annual",
-            f'<td>{date}</td>',
-            "Active",
-            f'<a href="{url_path}">View Report</a>',
+            "John",                                      # [0] first_name
+            "Smith",                                     # [1] last_name
+            full_name,                                   # [2] full_name (plain text)
+            f'<a href="{url_path}">View Report</a>',    # [3] link_cell with href
+            date,                                        # [4] date (plain text)
         ]
 
     def test_extracts_name_and_url(self) -> None:
@@ -99,7 +113,7 @@ class TestParseFilingRow:
         result = _parse_filing_row(row)
         assert result is not None
         name, _, url = result
-        assert name == "Smith, John"
+        assert name == "Smith, John (Senator)"
         assert "abc123" in url
 
     def test_relative_url_becomes_absolute(self) -> None:
@@ -109,12 +123,24 @@ class TestParseFilingRow:
         _, _, url = result
         assert url.startswith("https://efdsearch.senate.gov")
 
+    def test_extracts_date_string(self) -> None:
+        row = self._html_row(date="01/31/2025")
+        result = _parse_filing_row(row)
+        assert result is not None
+        _, date_str, _ = result
+        assert date_str == "01/31/2025"
+
     def test_empty_row_returns_none(self) -> None:
         assert _parse_filing_row([]) is None
         assert _parse_filing_row(["cell"]) is None
 
-    def test_row_without_url_returns_none(self) -> None:
-        row = ["No Link Here", "Senator", "PTR", "03/15/2024"]
+    def test_row_without_href_returns_none(self) -> None:
+        # link_cell has no href attribute — should be rejected
+        row = [
+            "John", "Smith", "Smith, John (Senator)",
+            "<td>No link here</td>",
+            "03/15/2024",
+        ]
         assert _parse_filing_row(row) is None
 
 
