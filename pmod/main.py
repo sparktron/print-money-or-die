@@ -132,7 +132,7 @@ def dashboard() -> None:
 
     app = create_app()
     log.info("starting dashboard", url="http://localhost:8050")
-    app.run(debug=True, host="0.0.0.0", port=8050)
+    app.run(debug=False, host="127.0.0.1", port=8050)
 
 
 @cli.group()
