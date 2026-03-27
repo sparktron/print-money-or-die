@@ -1,11 +1,38 @@
 """Account data and position retrieval via the Schwab Trader API."""
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, field
 
 import structlog
 
 log = structlog.get_logger()
+
+
+@functools.lru_cache(maxsize=1)
+def _get_account_number() -> str:
+    """Return the account number for the first linked Schwab account.
+
+    Cached after first successful call — the account number is stable for
+    the lifetime of the process. Raises on failure so callers get an
+    explicit error rather than a silent empty string.
+    """
+    from schwab.client import Client
+
+    from pmod.auth.schwab import get_client
+
+    client = get_client()
+    resp = client.get_accounts(fields=[Client.Account.Fields.POSITIONS])
+    resp.raise_for_status()
+    accounts: list[dict] = resp.json()
+    if not accounts:
+        raise RuntimeError("No Schwab accounts returned.")
+    acct = accounts[0].get("securitiesAccount", accounts[0])
+    number = str(acct.get("accountNumber", ""))
+    if not number:
+        raise RuntimeError("Account number missing from Schwab response.")
+    log.info("schwab_account_number_cached", suffix=number[-4:])
+    return number
 
 
 @dataclass
@@ -188,15 +215,7 @@ def place_order(request: OrderRequest) -> OrderResult:
         else:
             return OrderResult(success=False, message=f"Unknown instruction: {request.instruction!r}")
 
-        resp_accts = client.get_accounts()
-        resp_accts.raise_for_status()
-        accounts: list[dict] = resp_accts.json()
-        if not accounts:
-            return OrderResult(success=False, message="No Schwab accounts found.")
-
-        acct = _unwrap_account(accounts[0])
-        account_number = str(acct.get("accountNumber", ""))
-
+        account_number = _get_account_number()
         resp = client.place_order(account_number, order)
         if resp.status_code in (200, 201):
             location = resp.headers.get("Location", "")
