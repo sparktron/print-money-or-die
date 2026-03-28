@@ -84,6 +84,19 @@ class PoliticianTrade(Base):
     fetched_at = Column(DateTime, server_default=func.now())
 
 
+class PortfolioSnapshot(Base):
+    """Daily snapshot of portfolio value for historical tracking."""
+
+    __tablename__ = "portfolio_snapshots"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    total_value: float = Column(Float, nullable=False)  # type: ignore[assignment]
+    cash_balance: float = Column(Float, nullable=False, default=0.0)  # type: ignore[assignment]
+    day_pnl: float = Column(Float, nullable=True)  # type: ignore[assignment]
+    num_positions: int = Column(Integer, nullable=True)  # type: ignore[assignment]
+    captured_at = Column(DateTime, server_default=func.now())
+
+
 class PoliticianSignal(Base):
     """Aggregated buy/sell signal derived from politician trading activity."""
 
