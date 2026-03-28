@@ -105,7 +105,7 @@ class TestAskViaCli:
         from pmod.advisor.claude import _ask_via_cli
 
         with patch("subprocess.run", return_value=_make_completed(1, "", "")):
-            with pytest.raises(RuntimeError, match="no stderr"):
+            with pytest.raises(RuntimeError, match="no output"):
                 _ask_via_cli("any question")
 
     def test_raises_on_timeout(self):
