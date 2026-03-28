@@ -52,16 +52,12 @@ _EMPTY_ACTIONS: dict = {"add_to_watchlist": [], "risk_tolerance": None, "strateg
 def _ask_via_cli(user_message: str) -> str:
     """Call the local ``claude`` CLI and return its stdout.
 
-    Uses ``--system-prompt`` so the advisor persona is injected cleanly,
-    and ``--output-format text`` for plain-text output.  The CLI reuses
-    whatever auth Claude Code has already configured.
+    The user message is passed via stdin (``input=``), which avoids:
+    - Argument-length limits on long portfolio context strings
+    - The 3-second "no stdin" hang (stdin pipe is consumed immediately)
 
-    Notes:
-    - ``stdin=DEVNULL`` prevents the 3-second "no stdin" hang when called
-      from a Dash callback thread.
-    - ``cwd`` is set to the home directory so the CLI doesn't pick up the
-      repo's CLAUDE.md and override our system prompt with coding-assistant
-      context.
+    ``cwd`` is set to the home directory so the CLI doesn't pick up the
+    repo's CLAUDE.md and replace our financial-advisor system prompt.
     """
     import os
     result = subprocess.run(
@@ -70,12 +66,11 @@ def _ask_via_cli(user_message: str) -> str:
             "--print",
             "--system-prompt", _SYSTEM_PROMPT,
             "--output-format", "text",
-            user_message,
         ],
+        input=user_message,
         capture_output=True,
         text=True,
         timeout=120,
-        stdin=subprocess.DEVNULL,
         cwd=os.path.expanduser("~"),
     )
     if result.returncode != 0:

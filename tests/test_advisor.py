@@ -26,17 +26,27 @@ def _make_completed(returncode: int, stdout: str = "", stderr: str = "") -> subp
 # ── _ask_via_cli ───────────────────────────────────────────────────────────────
 
 class TestAskViaCli:
-    def test_uses_devnull_stdin(self):
-        """subprocess.DEVNULL must be passed as stdin — prevents Dash-thread hang."""
+    def test_uses_stdin_pipe_not_positional_arg(self):
+        """User message must be passed via input= (stdin pipe), not as a positional arg.
+
+        Passing it as a positional argument causes exit code 1 in the Dash
+        callback environment when the portfolio context makes the string long.
+        Using input= also eliminates the 3-second 'no stdin' hang.
+        """
         from pmod.advisor.claude import _ask_via_cli
 
         with patch("subprocess.run", return_value=_make_completed(0, "hello")) as mock_run:
             _ask_via_cli("test question")
 
         call_kwargs = mock_run.call_args.kwargs
-        assert call_kwargs.get("stdin") == subprocess.DEVNULL, (
-            "stdin must be subprocess.DEVNULL to prevent the 3-second hang "
-            "when called from a Dash callback thread"
+        call_args = mock_run.call_args.args[0]
+
+        # Message must be in input=, not appended to the arg list
+        assert call_kwargs.get("input") == "test question", (
+            "user_message must be passed as input= (stdin pipe), not a positional arg"
+        )
+        assert "test question" not in call_args, (
+            "user_message must not appear in the subprocess args list"
         )
 
     def test_cwd_is_not_repo_root(self):
