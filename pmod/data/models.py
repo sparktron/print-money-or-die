@@ -166,7 +166,7 @@ def get_session() -> Generator[Session, None, None]:
     back. In either case the session is closed.
     ``init_db()`` must be called at startup before any session is used.
     """
-    factory = sessionmaker(bind=get_engine())
+    factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
     session = factory()
     try:
         yield session
