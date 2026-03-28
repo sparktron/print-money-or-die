@@ -55,7 +55,15 @@ def _ask_via_cli(user_message: str) -> str:
     Uses ``--system-prompt`` so the advisor persona is injected cleanly,
     and ``--output-format text`` for plain-text output.  The CLI reuses
     whatever auth Claude Code has already configured.
+
+    Notes:
+    - ``stdin=DEVNULL`` prevents the 3-second "no stdin" hang when called
+      from a Dash callback thread.
+    - ``cwd`` is set to the home directory so the CLI doesn't pick up the
+      repo's CLAUDE.md and override our system prompt with coding-assistant
+      context.
     """
+    import os
     result = subprocess.run(
         [
             "claude",
@@ -67,9 +75,11 @@ def _ask_via_cli(user_message: str) -> str:
         capture_output=True,
         text=True,
         timeout=120,
+        stdin=subprocess.DEVNULL,
+        cwd=os.path.expanduser("~"),
     )
     if result.returncode != 0:
-        stderr = result.stderr.strip()
+        stderr = result.stderr.strip() or "(no stderr)"
         raise RuntimeError(f"claude CLI exited {result.returncode}: {stderr[:300]}")
     return result.stdout.strip()
 

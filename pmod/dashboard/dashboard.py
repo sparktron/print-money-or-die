@@ -870,13 +870,32 @@ def create_app() -> dash.Dash:
         prevent_initial_call=True,
     )
     def ask_advisor(n_clicks: int, question: str | None) -> tuple:
+        import traceback
         if not n_clicks or not question or not question.strip():
             return no_update, no_update
 
         from pmod.advisor.claude import ask_claude
+        import structlog
+        _log = structlog.get_logger()
 
-        text, actions = ask_claude(question.strip())
-        return render_response(text), actions
+        try:
+            text, actions = ask_claude(question.strip())
+            return render_response(text), actions
+        except Exception:
+            tb = traceback.format_exc()
+            _log.error("advisor_callback_unhandled_error", traceback=tb)
+            error_div = html.Div([
+                html.P("Unhandled error — full traceback:", style={
+                    "color": "#ef4444", "fontWeight": "600", "marginBottom": "8px",
+                }),
+                html.Pre(tb, style={
+                    "background": "#1a1a2e", "color": "#fca5a5",
+                    "padding": "12px", "borderRadius": "6px",
+                    "fontSize": "12px", "overflowX": "auto",
+                    "whiteSpace": "pre-wrap", "wordBreak": "break-all",
+                }),
+            ])
+            return error_div, {}
 
     # ── Advisor: render actions panel from store ───────────────────────────
 
