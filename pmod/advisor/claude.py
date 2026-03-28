@@ -86,8 +86,15 @@ def _ask_via_cli(user_message: str) -> str:
         env=_cli_env(),
     )
     if result.returncode != 0:
-        stderr = result.stderr.strip() or "(no stderr)"
-        raise RuntimeError(f"claude CLI exited {result.returncode}: {stderr[:300]}")
+        # The CLI sometimes prints its error to stdout (e.g. "Not logged in")
+        detail = result.stderr.strip() or result.stdout.strip() or "(no output)"
+        if "not logged in" in detail.lower() or "login" in detail.lower():
+            raise RuntimeError(
+                "The claude CLI is not logged in.\n"
+                "Run this in your terminal:  claude /login\n"
+                f"(raw: {detail[:120]})"
+            )
+        raise RuntimeError(f"claude CLI exited {result.returncode}: {detail[:300]}")
     return result.stdout.strip()
 
 
@@ -260,7 +267,15 @@ def ask_claude(question: str) -> tuple[str, dict]:
             dict(_EMPTY_ACTIONS),
         )
     except Exception as exc:
-        log.error("advisor_cli_error", error=str(exc))
+        err = str(exc)
+        log.error("advisor_cli_error", error=err)
+        if "not logged in" in err.lower() or "login" in err.lower():
+            return (
+                "⚠️ The claude CLI is not logged in.\n\n"
+                "Fix: run `claude /login` in your terminal, complete the browser flow, "
+                "then ask your question again.",
+                dict(_EMPTY_ACTIONS),
+            )
         return (
             f"⚠️ AI Advisor error (CLI): {exc}\n\n"
             "Run `claude -p 'hello'` in your terminal to verify the CLI works.",
