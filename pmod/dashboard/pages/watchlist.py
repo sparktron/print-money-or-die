@@ -74,16 +74,51 @@ def _load_picks() -> list[dict]:
                 "tags": [],
             })
 
-        # Try to enrich with live quotes (best-effort, don't block)
+        # Try to enrich with live quotes — parallel, 3-second hard cap.
+        # Quotes are cosmetic; any slowness or rate-limit just shows "—".
         try:
-            from pmod.data.market import get_quote
-            for pick in picks[:6]:  # limit API calls
-                quote = get_quote(pick["ticker"])
-                if quote:
-                    pick["price"] = f"${quote.price:,.2f}"
-                    sign = "+" if quote.change_pct >= 0 else ""
-                    pick["change"] = f"{sign}{quote.change_pct:.1f}%"
-                    pick["change_positive"] = quote.change_pct >= 0
+            import httpx
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            from pmod.config import get_settings
+
+            api_key = get_settings().polygon_api_key
+
+            def _fetch_quote(ticker: str) -> tuple[str, dict | None]:
+                if not api_key:
+                    return ticker, None
+                try:
+                    resp = httpx.get(
+                        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev",
+                        params={"apiKey": api_key},
+                        timeout=2.5,
+                    )
+                    resp.raise_for_status()
+                    results = resp.json().get("results", [])
+                    if not results:
+                        return ticker, None
+                    r = results[0]
+                    close = float(r.get("c", 0))
+                    prev_open = float(r.get("o", close))
+                    change_pct = ((close - prev_open) / prev_open * 100) if prev_open else 0.0
+                    return ticker, {"price": close, "change_pct": round(change_pct, 2)}
+                except Exception:
+                    return ticker, None
+
+            enrich_picks = picks[:5]
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = {pool.submit(_fetch_quote, p["ticker"]): p for p in enrich_picks}
+                for future in as_completed(futures, timeout=3.0):
+                    try:
+                        ticker, data = future.result()
+                        if data:
+                            pick = futures[future]
+                            pick["price"] = f"${data['price']:,.2f}"
+                            sign = "+" if data["change_pct"] >= 0 else ""
+                            pick["change"] = f"{sign}{data['change_pct']:.1f}%"
+                            pick["change_positive"] = data["change_pct"] >= 0
+                    except Exception:
+                        pass
         except Exception as exc:
             log.debug("watchlist_quote_enrich_failed", error=str(exc)[:60])
 
