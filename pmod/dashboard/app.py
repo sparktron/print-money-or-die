@@ -307,6 +307,13 @@ def create_app() -> dash.Dash:
         "<body>{%app_entry%}<footer>{%config%}{%scripts%}{%renderer%}</footer></body></html>"
     )
 
+    # Start background scheduler (token refresh, research, snapshots)
+    try:
+        from pmod.scheduler.jobs import start_scheduler
+        start_scheduler()
+    except Exception:
+        pass  # Non-critical — dashboard works without scheduler
+
     app.layout = html.Div(
         [
             # Init trigger: fires once on page load

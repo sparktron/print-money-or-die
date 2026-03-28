@@ -6,10 +6,13 @@ from dataclasses import dataclass, field
 
 import structlog
 
+from pmod.utils.retry import schwab_limiter, with_backoff
+
 log = structlog.get_logger()
 
 
 @functools.lru_cache(maxsize=1)
+@with_backoff(max_retries=2, base_delay=2.0, retry_on=(Exception,))
 def _get_account_number() -> str:
     """Return the account number for the first linked Schwab account.
 
@@ -144,6 +147,7 @@ def get_account_summary() -> AccountSummary | None:
     from pmod.auth.schwab import get_client
 
     try:
+        schwab_limiter.acquire()
         client = get_client()
         resp = client.get_accounts(fields=[Client.Account.Fields.POSITIONS])
         resp.raise_for_status()
@@ -200,6 +204,7 @@ def place_order(request: OrderRequest) -> OrderResult:
         return OrderResult(success=False, message="Quantity must be a positive integer.")
 
     try:
+        schwab_limiter.acquire()
         client = get_client()
 
         if request.instruction == "buy":
