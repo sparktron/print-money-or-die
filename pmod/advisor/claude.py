@@ -231,18 +231,41 @@ def ask_claude(question: str) -> tuple[str, dict]:
         raw = _ask_via_cli(user_message)
         log.info("advisor_used_cli")
     except FileNotFoundError:
+        # claude binary not on PATH — try SDK as a fallback
         log.info("advisor_cli_not_found_trying_sdk")
         try:
             raw = _ask_via_sdk(user_message)
             log.info("advisor_used_sdk")
+        except RuntimeError as exc:
+            # Credential error from SDK — surface a clear fix
+            log.error("advisor_no_credentials", error=str(exc))
+            return (
+                f"⚠️ AI Advisor unavailable — claude CLI not found and no API key set.\n\n"
+                f"To fix: install Claude Code (https://claude.ai/code) so `claude` is on PATH, "
+                f"or add ANTHROPIC_API_KEY to your .env file.\n\nDetail: {exc}",
+                dict(_EMPTY_ACTIONS),
+            )
         except Exception as exc:
             log.error("advisor_sdk_error", error=str(exc))
-            return (str(exc), dict(_EMPTY_ACTIONS))
+            return (
+                f"⚠️ AI Advisor error (SDK): {exc}\n\n"
+                "Check that ANTHROPIC_API_KEY in your .env is valid.",
+                dict(_EMPTY_ACTIONS),
+            )
     except subprocess.TimeoutExpired:
-        return ("Request timed out after 120 s — try a shorter question.", dict(_EMPTY_ACTIONS))
+        log.warning("advisor_timeout")
+        return (
+            "⚠️ Request timed out after 120 s.  Try a shorter question, "
+            "or check that the claude CLI is responsive (`claude -p 'hi'` in your terminal).",
+            dict(_EMPTY_ACTIONS),
+        )
     except Exception as exc:
         log.error("advisor_cli_error", error=str(exc))
-        return (f"Error contacting Claude: {exc}", dict(_EMPTY_ACTIONS))
+        return (
+            f"⚠️ AI Advisor error (CLI): {exc}\n\n"
+            "Run `claude -p 'hello'` in your terminal to verify the CLI works.",
+            dict(_EMPTY_ACTIONS),
+        )
 
     actions = _parse_actions(raw)
     display_text = re.sub(r"\s*<actions>.*?</actions>", "", raw, flags=re.DOTALL).strip()
