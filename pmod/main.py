@@ -130,7 +130,7 @@ def setup() -> None:
 @cli.command("dashboard")
 def dashboard() -> None:
     """Launch the graphical dashboard."""
-    from pmod.dashboard.app import create_app
+    from pmod.dashboard.dashboard import create_app
 
     app = create_app()
     log.info("starting dashboard", url="http://localhost:8050")

@@ -29,7 +29,7 @@ def test_import_submodules() -> None:
 
 
 def test_dashboard_creates() -> None:
-    from pmod.dashboard.app import create_app
+    from pmod.dashboard.dashboard import create_app
 
     app = create_app()
     assert "PrintMoneyOrDie" in app.title
