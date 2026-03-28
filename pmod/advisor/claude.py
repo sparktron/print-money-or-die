@@ -1,12 +1,13 @@
 """Claude AI advisor — contextual finance Q&A that feeds back into portfolio strategy.
 
 Uses the local ``claude`` CLI (Claude Code) so no separate ANTHROPIC_API_KEY
-is needed — it reuses whatever auth the CLI already has configured.
-Falls back to the Anthropic SDK if the CLI is not on PATH.
+is needed — it reuses whatever OAuth credentials the CLI already has.
+Falls back to the Anthropic SDK (ANTHROPIC_API_KEY) if the CLI is not on PATH.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 
@@ -49,17 +50,27 @@ Rules:
 _EMPTY_ACTIONS: dict = {"add_to_watchlist": [], "risk_tolerance": None, "strategy": None}
 
 
+def _cli_env() -> dict:
+    """Return a subprocess environment safe for the ``claude`` CLI.
+
+    When pmod runs inside Claude Code / Claude Desktop the host injects
+    ``ANTHROPIC_API_KEY=""`` (empty string).  The CLI sees that, treats it as
+    "API key provided but blank", and exits 1.  We strip it so the CLI falls
+    back to its own stored OAuth credentials.
+    """
+    env = dict(os.environ)
+    if not env.get("ANTHROPIC_API_KEY", "").strip():
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
+
+
 def _ask_via_cli(user_message: str) -> str:
     """Call the local ``claude`` CLI and return its stdout.
 
-    The user message is passed via stdin (``input=``), which avoids:
-    - Argument-length limits on long portfolio context strings
-    - The 3-second "no stdin" hang (stdin pipe is consumed immediately)
-
-    ``cwd`` is set to the home directory so the CLI doesn't pick up the
-    repo's CLAUDE.md and replace our financial-advisor system prompt.
+    - Passes the prompt via stdin to avoid shell argument-length limits.
+    - Strips empty ANTHROPIC_API_KEY so the CLI uses its OAuth credentials.
+    - Sets cwd to $HOME so the repo's CLAUDE.md is not auto-discovered.
     """
-    import os
     result = subprocess.run(
         [
             "claude",
@@ -72,6 +83,7 @@ def _ask_via_cli(user_message: str) -> str:
         text=True,
         timeout=120,
         cwd=os.path.expanduser("~"),
+        env=_cli_env(),
     )
     if result.returncode != 0:
         stderr = result.stderr.strip() or "(no stderr)"
@@ -80,12 +92,18 @@ def _ask_via_cli(user_message: str) -> str:
 
 
 def _ask_via_sdk(user_message: str) -> str:
-    """Fallback: call the Anthropic SDK directly (requires ANTHROPIC_API_KEY)."""
+    """Fallback: Anthropic SDK with ANTHROPIC_API_KEY from .env."""
     import anthropic
 
-    client = anthropic.Anthropic()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set.  Add it to your .env file, "
+            "or run pmod inside Claude Code (which supplies its own auth)."
+        )
+    client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-sonnet-4-6",
         max_tokens=1500,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
@@ -195,8 +213,8 @@ def _get_portfolio_context() -> dict:
 def ask_claude(question: str) -> tuple[str, dict]:
     """Ask Claude a finance question with full portfolio context.
 
-    Tries the local ``claude`` CLI first (no API key needed), then falls
-    back to the Anthropic SDK if the CLI is not available.
+    Tries the local ``claude`` CLI first (uses its own stored OAuth auth),
+    then falls back to the Anthropic SDK if the CLI is unavailable.
 
     Returns:
         (display_text, actions) where actions is a dict with keys:
@@ -213,19 +231,15 @@ def ask_claude(question: str) -> tuple[str, dict]:
         raw = _ask_via_cli(user_message)
         log.info("advisor_used_cli")
     except FileNotFoundError:
-        # claude CLI not on PATH — try SDK
         log.info("advisor_cli_not_found_trying_sdk")
         try:
             raw = _ask_via_sdk(user_message)
             log.info("advisor_used_sdk")
         except Exception as exc:
             log.error("advisor_sdk_error", error=str(exc))
-            return (
-                "AI Advisor unavailable: claude CLI not found and ANTHROPIC_API_KEY is not set.",
-                dict(_EMPTY_ACTIONS),
-            )
+            return (str(exc), dict(_EMPTY_ACTIONS))
     except subprocess.TimeoutExpired:
-        return ("Request timed out after 120s.", dict(_EMPTY_ACTIONS))
+        return ("Request timed out after 120 s — try a shorter question.", dict(_EMPTY_ACTIONS))
     except Exception as exc:
         log.error("advisor_cli_error", error=str(exc))
         return (f"Error contacting Claude: {exc}", dict(_EMPTY_ACTIONS))
