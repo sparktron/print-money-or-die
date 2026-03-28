@@ -196,7 +196,7 @@ def render_response(text: str) -> html.Div:
                         "letterSpacing": "1px",
                         "marginRight": "8px",
                     }),
-                    html.Span("claude-opus-4-6", style={
+                    html.Span("claude CLI", style={
                         "fontSize": "11px",
                         "color": COLORS["text_tertiary"],
                         "fontFamily": MONO,

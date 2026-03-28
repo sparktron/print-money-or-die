@@ -1,28 +1,22 @@
-"""Claude AI advisor — contextual finance Q&A that feeds back into portfolio strategy."""
+"""Claude AI advisor — contextual finance Q&A that feeds back into portfolio strategy.
+
+Uses the local ``claude`` CLI (Claude Code) so no separate ANTHROPIC_API_KEY
+is needed — it reuses whatever auth the CLI already has configured.
+Falls back to the Anthropic SDK if the CLI is not on PATH.
+"""
 from __future__ import annotations
 
-import functools
 import json
 import re
+import subprocess
 
 import structlog
 
 log = structlog.get_logger()
 
-# Model used for all advisor calls.  Override here (or make a config field) if
-# you want to swap to a cheaper/faster model without hunting through the code.
-_ADVISOR_MODEL = "claude-opus-4-5"
-
 # Valid values accepted by the DB / preferences system
 _VALID_RISK = {"low", "medium", "high", "degen"}
 _VALID_STRATEGY = {"growth", "value", "dividend", "momentum", "balanced"}
-
-
-@functools.lru_cache(maxsize=1)
-def _get_anthropic_client():  # type: ignore[no-untyped-def]
-    """Return the cached Anthropic client, initialised once per process."""
-    import anthropic
-    return anthropic.Anthropic()
 
 _SYSTEM_PROMPT = """\
 You are an expert financial advisor embedded in a personal portfolio management tool called
@@ -52,9 +46,50 @@ Rules:
 - Do NOT explain the JSON — just emit it.
 """
 
+_EMPTY_ACTIONS: dict = {"add_to_watchlist": [], "risk_tolerance": None, "strategy": None}
+
+
+def _ask_via_cli(user_message: str) -> str:
+    """Call the local ``claude`` CLI and return its stdout.
+
+    Uses ``--system-prompt`` so the advisor persona is injected cleanly,
+    and ``--output-format text`` for plain-text output.  The CLI reuses
+    whatever auth Claude Code has already configured.
+    """
+    result = subprocess.run(
+        [
+            "claude",
+            "--print",
+            "--system-prompt", _SYSTEM_PROMPT,
+            "--output-format", "text",
+            user_message,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"claude CLI exited {result.returncode}: {stderr[:300]}")
+    return result.stdout.strip()
+
+
+def _ask_via_sdk(user_message: str) -> str:
+    """Fallback: call the Anthropic SDK directly (requires ANTHROPIC_API_KEY)."""
+    import anthropic
+
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=1500,
+        system=_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    )
+    return message.content[0].text
+
 
 def _build_context(portfolio_context: dict) -> str:
-    """Render portfolio_context as a readable summary for the system message."""
+    """Render portfolio_context as a readable summary."""
     lines: list[str] = []
 
     prefs = portfolio_context.get("preferences", {})
@@ -87,23 +122,21 @@ def _build_context(portfolio_context: dict) -> str:
 
 def _parse_actions(raw: str) -> dict:
     """Extract and validate the <actions> JSON block from Claude's response."""
-    default: dict = {"add_to_watchlist": [], "risk_tolerance": None, "strategy": None}
     match = re.search(r"<actions>\s*(\{.*?\})\s*</actions>", raw, re.DOTALL)
     if not match:
-        return default
+        return dict(_EMPTY_ACTIONS)
 
     try:
         parsed = json.loads(match.group(1))
     except json.JSONDecodeError:
         log.warning("advisor_actions_parse_error", raw=match.group(1)[:200])
-        return default
+        return dict(_EMPTY_ACTIONS)
 
     watchlist_raw = parsed.get("add_to_watchlist") or []
     watchlist = [
         item for item in watchlist_raw
         if isinstance(item, dict) and re.fullmatch(r"[A-Z]{1,5}", item.get("ticker", ""))
     ]
-
     risk = parsed.get("risk_tolerance")
     strategy = parsed.get("strategy")
 
@@ -157,39 +190,41 @@ def _get_portfolio_context() -> dict:
 def ask_claude(question: str) -> tuple[str, dict]:
     """Ask Claude a finance question with full portfolio context.
 
+    Tries the local ``claude`` CLI first (no API key needed), then falls
+    back to the Anthropic SDK if the CLI is not available.
+
     Returns:
         (display_text, actions) where actions is a dict with keys:
             add_to_watchlist  — list of {ticker, reason} dicts
             risk_tolerance    — new risk level string, or None
             strategy          — new strategy string, or None
     """
-    import anthropic
-
     portfolio_context = _get_portfolio_context()
     context_block = _build_context(portfolio_context)
     user_message = f"Portfolio context:\n{context_block}\n\nQuestion: {question}"
 
+    raw = ""
     try:
-        client = _get_anthropic_client()
-        message = client.messages.create(
-            model=_ADVISOR_MODEL,
-            max_tokens=1500,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-    except anthropic.AuthenticationError:
-        return (
-            "ANTHROPIC_API_KEY is missing or invalid. Add it to your .env file.",
-            {"add_to_watchlist": [], "risk_tolerance": None, "strategy": None},
-        )
+        raw = _ask_via_cli(user_message)
+        log.info("advisor_used_cli")
+    except FileNotFoundError:
+        # claude CLI not on PATH — try SDK
+        log.info("advisor_cli_not_found_trying_sdk")
+        try:
+            raw = _ask_via_sdk(user_message)
+            log.info("advisor_used_sdk")
+        except Exception as exc:
+            log.error("advisor_sdk_error", error=str(exc))
+            return (
+                "AI Advisor unavailable: claude CLI not found and ANTHROPIC_API_KEY is not set.",
+                dict(_EMPTY_ACTIONS),
+            )
+    except subprocess.TimeoutExpired:
+        return ("Request timed out after 120s.", dict(_EMPTY_ACTIONS))
     except Exception as exc:
-        log.error("advisor_api_error", error=str(exc))
-        return (
-            f"Error contacting Claude: {exc}",
-            {"add_to_watchlist": [], "risk_tolerance": None, "strategy": None},
-        )
+        log.error("advisor_cli_error", error=str(exc))
+        return (f"Error contacting Claude: {exc}", dict(_EMPTY_ACTIONS))
 
-    raw = message.content[0].text
     actions = _parse_actions(raw)
     display_text = re.sub(r"\s*<actions>.*?</actions>", "", raw, flags=re.DOTALL).strip()
 
