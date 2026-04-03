@@ -1,0 +1,67 @@
+/* Force dark theme for all Select/Dropdown components */
+
+/* Main dropdown control */
+.Select-control {
+    background-color: #1f2937 !important;
+    border-color: #374151 !important;
+    color: #e5e7eb !important;
+}
+
+/* Dropdown menu - uses position:fixed/absolute so we need global selector */
+.Select-menu-outer {
+    background-color: #111827 !important;
+    border-color: #374151 !important;
+    z-index: 1000 !important;
+}
+
+.Select-menu {
+    background-color: #111827 !important;
+    max-height: 200px !important;
+}
+
+/* Individual options */
+.Select-option {
+    background-color: #111827 !important;
+    color: #e5e7eb !important;
+    padding: 8px 12px !important;
+}
+
+.Select-option:hover,
+.Select-option.is-focused {
+    background-color: #1f2937 !important;
+    color: #e5e7eb !important;
+}
+
+.Select-option.is-selected {
+    background-color: #3b82f6 !important;
+    color: #ffffff !important;
+}
+
+/* Placeholder and value text */
+.Select-input input {
+    color: #e5e7eb !important;
+}
+
+.Select-input input::placeholder {
+    color: #9ca3af !important;
+}
+
+.Select-value-label {
+    color: #3b82f6 !important;
+}
+
+/* Arrow indicator */
+.Select-arrow {
+    border-top-color: #9ca3af !important;
+}
+
+.Select-arrow-zone {
+    background-color: transparent !important;
+}
+
+/* Search input in dropdown */
+.Select-input > input {
+    background-color: #111827 !important;
+    border: 1px solid #374151 !important;
+    color: #e5e7eb !important;
+}

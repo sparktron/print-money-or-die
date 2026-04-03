@@ -481,8 +481,14 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
                 options=dropdown_options,
                 value=filter_account,
                 clearable=False,
-                className="dark-dropdown",
-                style={"width": "260px", "fontSize": "13px"},
+                style={
+                    "width": "260px",
+                    "fontSize": "13px",
+                    "background": "#1f2937",
+                    "border": "1px solid #374151",
+                    "borderRadius": "10px",
+                    "color": "#e5e7eb",
+                },
             ),
         ], style={"display": "flex", "alignItems": "center", "gap": "16px"}),
     ], style={"marginBottom": "20px"})
