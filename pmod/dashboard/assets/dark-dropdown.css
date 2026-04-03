@@ -1,116 +1,122 @@
-/* Aggressive dark theme styling for all Dash Select/Dropdown components */
+/* ── Dash Dropdown Dark Theme ──────────────────────────────────────────────
+   Real class names inspected from DOM — NOT the old React-Select .Select-* names.
+   Classes found:
+     .dash-dropdown-wrapper     outer container div
+     .dash-dropdown             component root (also has our className)
+     .dash-dropdown-trigger     the visible closed control
+     .dash-dropdown-value       selected value text
+     .dash-dropdown-content     floating menu (white by default — override here)
+     .dash-dropdown-search-container  search row in menu
+     .dash-dropdown-search      search <input>
+     .dash-options-list         option list container
+     .dash-options-list-option  individual option row
+     .dash-dropdown-option      option variant class
+     .selected                  currently selected option
+ ─────────────────────────────────────────────────────────────────────────── */
 
-/* Main control */
-.Select-control {
+/* Wrapper / closed control */
+.dash-dropdown-wrapper {
     background-color: #1f2937 !important;
     border: 1px solid #374151 !important;
     border-radius: 10px !important;
-    box-shadow: none !important;
     color: #e5e7eb !important;
 }
 
-.Select-control:hover {
-    box-shadow: none !important;
+.dash-dropdown-wrapper:hover {
     border-color: #4b5563 !important;
 }
 
-.Select-control.is-open {
-    border-color: #3b82f6 !important;
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
+/* Inner .dash-dropdown div has its own white bg — override it */
+.dash-dropdown-wrapper > .dash-dropdown,
+.dash-dropdown {
+    background-color: #1f2937 !important;
+    border: none !important;
+    border-radius: 10px !important;
+    color: #e5e7eb !important;
 }
 
-/* Control text and input */
-.Select-input > input {
+/* The trigger area (transparent, inherits wrapper bg) */
+.dash-dropdown-trigger {
     background-color: transparent !important;
     color: #e5e7eb !important;
-    border: none !important;
 }
 
-.Select-input > input::placeholder {
+/* Selected value text */
+.dash-dropdown-value,
+.dash-dropdown-value-item,
+.dash-dropdown-value-item span {
+    color: #e5e7eb !important;
+}
+
+/* SVG arrow icon */
+.dash-dropdown-trigger-icon {
     color: #9ca3af !important;
 }
 
-.Select-value-label {
-    color: #3b82f6 !important;
-    font-weight: 500 !important;
-}
+/* ── Dropdown menu (floating) ─────────────────────────────────────────────── */
 
-.Select-value {
-    color: #e5e7eb !important;
-}
-
-/* Arrow icon */
-.Select-arrow {
-    border-color: #9ca3af transparent transparent !important;
-    border-width: 5px 4px 0 4px !important;
-}
-
-.Select-control.is-open .Select-arrow {
-    border-color: transparent transparent #9ca3af transparent !important;
-}
-
-/* Dropdown menu - these are often rendered outside the normal flow */
-.Select-menu-outer {
+.dash-dropdown-content {
     background-color: #111827 !important;
     border: 1px solid #374151 !important;
     border-radius: 0 0 10px 10px !important;
-    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3) !important;
-    margin-top: -1px !important;
-    z-index: 9999 !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
 }
 
-.Select-menu-outer.is-open {
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4) !important;
-}
-
-.Select-menu {
+/* Search row at top of menu */
+.dash-dropdown-search-container {
     background-color: #111827 !important;
-    max-height: 300px !important;
-}
-
-/* Individual option items */
-.Select-option {
-    background-color: #111827 !important;
-    color: #e5e7eb !important;
-    padding: 8px 12px !important;
-    border: none !important;
-}
-
-.Select-option:hover {
-    background-color: #1f2937 !important;
-    color: #e5e7eb !important;
-}
-
-.Select-option.is-focused {
-    background-color: #1f2937 !important;
-    color: #e5e7eb !important;
-}
-
-.Select-option.is-selected {
-    background-color: #3b82f6 !important;
-    color: #ffffff !important;
-}
-
-.Select-option.is-selected:hover {
-    background-color: #2563eb !important;
-    color: #ffffff !important;
-}
-
-/* Search input within dropdown */
-.Select-input input,
-.Select-menu .Select-input input {
-    background-color: #1f2937 !important;
-    color: #e5e7eb !important;
-    border: 1px solid #374151 !important;
-    border-radius: 4px !important;
+    border-bottom: 1px solid #374151 !important;
     padding: 6px 8px !important;
 }
 
-/* Clearable button */
-.Select-clear {
-    color: #9ca3af !important;
+.dash-dropdown-search {
+    background-color: #1f2937 !important;
+    border: 1px solid #374151 !important;
+    border-radius: 6px !important;
+    color: #e5e7eb !important;
+    outline: none !important;
+    padding: 5px 8px !important;
+    width: 100% !important;
 }
 
-.Select-clear:hover {
+.dash-dropdown-search::placeholder {
+    color: #6b7280 !important;
+}
+
+.dash-dropdown-search-icon {
+    color: #6b7280 !important;
+}
+
+/* Options list container */
+.dash-options-list,
+.dash-dropdown-options {
+    background-color: #111827 !important;
+}
+
+/* Individual options */
+.dash-options-list-option,
+.dash-dropdown-option {
+    background-color: #111827 !important;
     color: #e5e7eb !important;
+    padding: 8px 12px !important;
+    cursor: pointer !important;
+}
+
+.dash-options-list-option:hover,
+.dash-dropdown-option:hover {
+    background-color: #1f2937 !important;
+    color: #ffffff !important;
+}
+
+/* Selected option */
+.dash-options-list-option.selected,
+.dash-dropdown-option.selected {
+    background-color: #1d4ed8 !important;
+    color: #ffffff !important;
+    font-weight: 500 !important;
+}
+
+.dash-options-list-option.selected:hover,
+.dash-dropdown-option.selected:hover {
+    background-color: #1e40af !important;
 }
