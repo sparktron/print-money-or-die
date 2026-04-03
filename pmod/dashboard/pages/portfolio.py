@@ -216,21 +216,35 @@ def _positions_table(rows_data: list[dict], masked: bool, show_pnl: bool = True)
          "padding": "12px 16px", "textAlign": "left", "borderBottom": f"1px solid {COLORS['border']}"}
     hr = {**h, "textAlign": "right"}
 
+    # Fixed column widths for alignment across all tables
     header_cells = [
-        html.Th("Asset", style=h),
-        html.Th("Shares", style=hr),
-        html.Th("Avg Cost", style=hr),
-        html.Th("Price", style=hr),
-        html.Th("Value", style=hr),
+        html.Th("Asset", style={**h, "width": "28%"}),
+        html.Th("Shares", style={**hr, "width": "11%"}),
+        html.Th("Avg Cost", style={**hr, "width": "11%"}),
+        html.Th("Price", style={**hr, "width": "11%"}),
+        html.Th("Value", style={**hr, "width": "12%"}),
     ]
     if show_pnl:
-        header_cells += [html.Th("Day P&L", style=hr), html.Th("Total P&L", style=hr)]
-    header_cells.append(html.Th("Weight", style=hr))
+        header_cells += [
+            html.Th("Day P&L", style={**hr, "width": "14%"}),
+            html.Th("Total P&L", style={**hr, "width": "14%"})
+        ]
+    header_cells.append(html.Th("Weight", style={**hr, "width": "9%"}))
     headers = html.Tr(header_cells)
 
     cell = {"padding": "14px 16px", "borderBottom": f"1px solid {COLORS['border']}", "fontSize": "14px", "color": COLORS["text_primary"]}
     cell_r = {**cell, "textAlign": "right", "fontFamily": MONO}
     dash_style = {**cell_r, "color": COLORS["text_tertiary"]}
+
+    # Column width styles for data cells (must match header widths)
+    cell_asset = {**cell, "width": "28%"}
+    cell_shares = {**cell_r, "width": "11%"}
+    cell_avg_cost = {**cell_r, "width": "11%"}
+    cell_price = {**cell_r, "width": "11%"}
+    cell_value = {**cell_r, "width": "12%"}
+    cell_day_pnl = {**cell_r, "width": "14%"}
+    cell_total_pnl = {**cell_r, "width": "14%"}
+    cell_weight = {**cell_r, "width": "9%"}
 
     table_rows = []
     for p in rows_data:
@@ -251,35 +265,42 @@ def _positions_table(rows_data: list[dict], masked: bool, show_pnl: bool = True)
                 html.Span(p["ticker"], style={"fontWeight": "600", "fontSize": "14px", "color": COLORS["text_primary"]}),
                 html.Br(),
                 html.Span(p["name"], style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
-            ]), style=cell),
-            html.Td(shares_str, style=cell_r if shares else dash_style),
-            html.Td(avg_cost_str, style=cell_r if avg_cost else dash_style),
-            html.Td(current_price_str, style=cell_r if current_price else dash_style),
-            html.Td(market_value_str, style=cell_r),
+            ]), style=cell_asset),
+            html.Td(shares_str, style={**cell_shares, **({} if shares else {"color": COLORS["text_tertiary"]})}),
+            html.Td(avg_cost_str, style={**cell_avg_cost, **({} if avg_cost else {"color": COLORS["text_tertiary"]})}),
+            html.Td(current_price_str, style={**cell_price, **({} if current_price else {"color": COLORS["text_tertiary"]})}),
+            html.Td(market_value_str, style=cell_value),
         ]
 
         if show_pnl:
             day_pnl = p.get("day_pnl", 0)
             day_pnl_pct = p.get("day_pnl_pct", 0)
+            total_pnl = p.get("total_pnl", 0)
             total_pnl_pct = p.get("total_pnl_pct", 0)
             day_color = COLORS["green"] if day_pnl >= 0 else COLORS["red"]
             total_color = COLORS["green"] if total_pnl_pct >= 0 else COLORS["red"]
             day_sign = "+" if day_pnl >= 0 else ""
-            total_sign = "+" if total_pnl_pct >= 0 else ""
+            total_sign = "+" if total_pnl >= 0 else ""
             day_pnl_str = f"{day_sign}{mask_number(abs(day_pnl), masked=masked)}" if masked else f"{day_sign}${abs(day_pnl):,.0f}"
             day_pnl_pct_str = mask_pct(abs(day_pnl_pct), masked=masked) if masked else f"{day_sign}{day_pnl_pct:.2f}%"
+            total_pnl_str = f"{total_sign}{mask_number(abs(total_pnl), masked=masked)}" if masked else f"{total_sign}${abs(total_pnl):,.0f}"
             total_pnl_pct_str = mask_pct(abs(total_pnl_pct), masked=masked) if masked else f"{total_sign}{total_pnl_pct:.1f}%"
             row_cells += [
-                html.Td(html.Span(f"{day_pnl_str} ({day_pnl_pct_str})", style={"color": day_color}), style=cell_r),
-                html.Td(html.Span(total_pnl_pct_str, style={"color": total_color}), style=cell_r),
+                html.Td(html.Span(f"{day_pnl_str} ({day_pnl_pct_str})", style={"color": day_color}), style=cell_day_pnl),
+                html.Td(html.Span(f"{total_pnl_str} ({total_pnl_pct_str})", style={"color": total_color}), style=cell_total_pnl),
             ]
 
-        row_cells.append(html.Td(_weight_bar(p["weight"]), style=cell_r))
+        row_cells.append(html.Td(_weight_bar(p["weight"]), style=cell_weight))
         table_rows.append(html.Tr(row_cells))
 
     return html.Div(
         html.Table([html.Thead(headers), html.Tbody(table_rows)],
-                   style={"width": "100%", "borderCollapse": "collapse", "borderSpacing": "0"}),
+                   style={
+                       "width": "100%",
+                       "borderCollapse": "collapse",
+                       "borderSpacing": "0",
+                       "tableLayout": "fixed"  # Fixed layout ensures column widths are respected
+                   }),
         style={"background": COLORS["surface"], "border": f"1px solid {COLORS['border']}", "borderRadius": "16px", "overflow": "hidden"},
     )
 
@@ -350,19 +371,39 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
         positions = get_positions(ext["name"])
         acct_total = ext["total_value"]
         all_account_names.append(ext["name"])
-        rows = [
-            {
+
+        # Calculate P/L for external accounts (no daily snapshots, so day_pnl = 0)
+        rows = []
+        ext_day_pnl = 0.0
+        for p in sorted(positions, key=lambda x: x.market_value or 0, reverse=True):
+            shares = p.shares or 0
+            current_price = p.current_price or 0
+            avg_cost = p.avg_cost or 0
+            market_value = p.market_value or 0.0
+
+            # Total P/L: (current_price - avg_cost) * shares
+            total_pnl = (current_price - avg_cost) * shares if avg_cost and shares else 0.0
+            total_pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost and current_price else 0.0
+
+            # Day P/L: external accounts don't track daily, so 0
+            day_pnl = 0.0
+            day_pnl_pct = 0.0
+
+            rows.append({
                 "ticker": p.ticker,
                 "name": p.company_name or p.ticker,
-                "shares": p.shares,
-                "avg_cost": p.avg_cost,
-                "current_price": p.current_price,
-                "market_value": p.market_value or 0.0,
-                "weight": (p.market_value / full_portfolio_total * 100) if full_portfolio_total and p.market_value else 0.0,
-            }
-            for p in sorted(positions, key=lambda x: x.market_value or 0, reverse=True)
-        ]
-        entries.append((ext["name"], ext["account_type"], acct_total, 0.0, 0.0, rows, False))
+                "shares": shares,
+                "avg_cost": avg_cost,
+                "current_price": current_price,
+                "market_value": market_value,
+                "day_pnl": day_pnl,
+                "day_pnl_pct": day_pnl_pct,
+                "total_pnl": total_pnl,
+                "total_pnl_pct": total_pnl_pct,
+                "weight": (market_value / full_portfolio_total * 100) if full_portfolio_total and market_value else 0.0,
+            })
+
+        entries.append((ext["name"], ext["account_type"], acct_total, 0.0, ext_day_pnl, rows, True))
 
     # ── Apply account filter ───────────────────────────────────────────────
     if filter_account and filter_account != "__all__":
@@ -440,8 +481,15 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
                 options=dropdown_options,
                 value=filter_account,
                 clearable=False,
-                className="dark-dropdown",
-                style={"width": "260px", "fontSize": "13px"},
+                style={
+                    "width": "260px",
+                    "fontSize": "13px",
+                    "background": COLORS["surface"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "borderRadius": "10px",
+                    "padding": "8px 12px",
+                    "color": COLORS["text_primary"],
+                },
             ),
         ], style={"display": "flex", "alignItems": "center", "gap": "16px"}),
     ], style={"marginBottom": "20px"})

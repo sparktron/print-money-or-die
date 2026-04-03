@@ -18,13 +18,13 @@ Pull market data from multiple financial APIs. Factor in your personal risk tole
 
 PrintMoneyOrDie (`pmod`) connects to your Charles Schwab account and builds a personalized, AI-driven investment pipeline:
 
-- **Research** — Pulls quotes, history, and news from Polygon.io and Alpha Vantage, then scores tickers on momentum (RSI, SMA crossover, composite momentum), valuation, and congressional trading patterns
+- **Research** — Pulls quotes, history, and news from Polygon.io and Alpha Vantage, then scores tickers on momentum (RSI, SMA crossover, composite momentum), valuation, and politician trading patterns
 - **Optimize** — Runs equal-weight optimization with iterative cap enforcement against your risk profile, sector constraints, and position limits — produces a concrete buy/sell diff
 - **Trade** — Places market and limit equity orders through Schwab's API with dry-run previews and confirmation prompts; rate-limited with automatic retry on transient failures
 - **Advise** — Ask Claude questions about your live portfolio; structured recommendations (new tickers, risk changes, strategy shifts) can be applied with one click
 - **Track** — Captures daily portfolio and S&P 500 (SPY) snapshots to calculate your alpha (excess return) over time; displays a 1-year performance comparison chart
-- **Schedule** — Background jobs handle token refresh (every 4h), congressional trade fetches (6:30 AM ET), daily research passes (7 AM ET), external account price updates (4:25 PM ET), portfolio snapshots (4:30 PM ET), benchmark snapshots (4:35 PM ET), and configurable rebalancing
-- **Monitor** — Serves a local Dash/Plotly dashboard with portfolio performance charts, alpha metrics, a curated watchlist, congressional trade tracking, and an AI advisor
+- **Schedule** — Background jobs handle token refresh (every 4h), politician trade fetches (6:30 AM ET), daily research passes (7 AM ET), external account price updates (4:25 PM ET), portfolio snapshots (4:30 PM ET), benchmark snapshots (4:35 PM ET), and configurable rebalancing
+- **Monitor** — Serves a local Dash/Plotly dashboard with portfolio performance charts, alpha metrics, a curated watchlist, politician trade tracking, and an AI advisor
 
 ## Dashboard
 
@@ -34,7 +34,7 @@ Five tabs, all wired to live Schwab data when connected:
 |---|---|
 | **Portfolio** | Live balance and daily P&L across all accounts, alpha (excess return vs S&P 500), 1-year performance chart, per-account positions tables, account filter dropdown, one-click rebalance diff |
 | **Watchlist** | AI-curated picks with plain-English reasoning, momentum scores, valuation and sentiment badges, "Add to Portfolio" trade modal |
-| **Congress Trades** | Recent congressional stock disclosures with buy/sell signals derived from politician trading patterns |
+| **Politician Trades** | Recent politician stock disclosures with buy/sell signals derived from politician trading patterns |
 | **AI Advisor** | Ask Claude anything about your portfolio; Claude responds with analysis and optional actions (add to watchlist, change risk/strategy) |
 | **Settings** | Risk tolerance, strategy, sector constraints, max position size, rebalance frequency, trade execution mode |
 
@@ -129,12 +129,12 @@ The **Portfolio** tab displays a **"Alpha vs S&P"** metric and a 1-year performa
   - Dividend stocks for dividend strategy
   - Value plays for value strategy
   - etc.
-- Congressional trading signals — When politicians are buying, stocks rise to the top
+- Politician trading signals — When politicians are buying, stocks rise to the top
 - Only top 15 candidates shown to keep it curated (not overwhelming)
 
 ---
 
-### 🏛️ Congress Trades Tab
+### 🏛️ Politician Trades Tab
 
 **What you see:**
 - **Recent senator/representative stock trades** — Buy and sell activity disclosed in Senate ETF database
@@ -383,7 +383,7 @@ Opens at [http://localhost:8050](http://localhost:8050).
 
 ---
 
-### Congressional Trading Commands
+### Politician Trading Commands
 
 **`pmod politicians fetch`**
 - Pulls the latest Senate PTR (Periodic Transaction Report) disclosures
@@ -398,12 +398,12 @@ Opens at [http://localhost:8050](http://localhost:8050).
   - # of politicians buying vs selling
   - Confidence score (higher = stronger consensus)
   - Signal: STRONG_BUY, BUY, HOLD, SELL
-- Results persist to database and display on Congress Trades tab
+- Results persist to database and display on Politician Trades tab
 - Runs automatically every morning at 6 AM ET with research pass
 - Can be run manually to update signals immediately
 
 **`pmod politicians list [--ticker TICKER] [--days N]`**
-- Prints recent congressional trades to terminal in readable format
+- Prints recent politician trades to terminal in readable format
 - Optional filters:
   - `--ticker XOM` — Show only XOM trades
   - `--days 30` — Show trades from the last 30 days
@@ -507,7 +507,7 @@ Once imported, external accounts appear in the dashboard Portfolio tab alongside
 **`pmod dashboard`**
 - Launches the Dash/Plotly web dashboard
 - Opens at `http://localhost:8050` (opens automatically in default browser)
-- All 5 tabs (Portfolio, Watchlist, Congress, AI Advisor, Settings) available
+- All 5 tabs (Portfolio, Watchlist, Politician Trades, AI Advisor, Settings) available
 - Dashboard runs until you press Ctrl+C
 - Scheduler jobs (token refresh, research, snapshots) run in background while dashboard is open
 
@@ -520,7 +520,7 @@ When the dashboard is running, background jobs execute automatically:
 | Job | Schedule | What it does |
 |-----|----------|---|
 | Token Refresh | Every 4 hours | Refreshes Schwab OAuth tokens (silent, no prompt) |
-| Congress Trades Fetch | Daily at 6:30 AM ET | Fetches latest Senate PTR disclosures from efdsearch.senate.gov |
+| Politician Trades Fetch | Daily at 6:30 AM ET | Fetches latest Senate PTR disclosures from efdsearch.senate.gov |
 | Research Pass | Daily at 7:00 AM ET | Scores tickers, refreshes watchlist, updates signals |
 | External Account Update | Daily at 4:25 PM ET | Fetches prices for external account positions, stores daily snapshots |
 | Portfolio Snapshot | Daily at 4:30 PM ET | Captures your portfolio value (for alpha calculation) |
@@ -550,7 +550,7 @@ pmod/
 │   ├── market.py        # Market data ingestion (Polygon.io, rate-limited + retried)
 │   ├── models.py        # SQLAlchemy models (UserPreference, WatchlistItem, ExternalAccount, ExternalPosition, etc.)
 │   ├── external_accounts.py  # CSV import + query helpers for manually-tracked external accounts
-│   └── politician_trades.py  # Senate EFD scraper + congressional disclosure ingestion
+│   └── politician_trades.py  # Senate EFD scraper + politician disclosure ingestion
 ├── research/
 │   ├── signals.py       # Technical indicators (RSI, SMA crossover, volatility, momentum)
 │   ├── screener.py      # Score + rank tickers by strategy fit, persist to watchlist
@@ -720,9 +720,9 @@ pmod setup
 
 ---
 
-### Workflow 6: Monitoring Congressional Trading Activity
+### Workflow 6: Monitoring Politician Trading Activity
 
-1. Open Dashboard → Congress Trades tab
+1. Open Dashboard → Politician Trades tab
 2. See recent senator/representative trades:
    - Politician name, party, state
    - Stock ticker, buy/sell action
@@ -814,7 +814,7 @@ pmod politicians list --ticker AAPL --days 90
 - Quotes refresh after 4 PM ET when market closes
 - Run `pmod research run` manually to refresh immediately
 
-**Congressional trades not updating**
+**Politician trades not updating**
 - Senate PTR database updated daily
 - Data often has 1–2 week lag before disclosure
 - Run `pmod politicians fetch` to pull latest (automatic daily at 6:30 AM ET)
@@ -905,7 +905,7 @@ pmod portfolio rebalance              # Then execute
 - Alpha is cumulative; temporary underperformance is normal
 - Use AI Advisor to strategize improvements
 
-**Use Congress Trades as a research signal, not a guarantee**
+**Use Politician Trades as a research signal, not a guarantee**
 - Strong politician consensus is bullish but not foolproof
 - Always cross-check with technical and fundamental analysis
 - Insider trades can signal early exits (profit-taking, not always bearish)
