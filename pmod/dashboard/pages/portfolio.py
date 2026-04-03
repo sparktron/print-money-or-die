@@ -493,6 +493,10 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
         ], style={"display": "flex", "alignItems": "center", "gap": "16px"}),
     ], style={"marginBottom": "20px"})
 
+    # Get period label for chart subtitle
+    period_label_map = {key: label for key, label in _PERIODS}
+    period_label = period_label_map.get(chart_period, "1Y")
+
     return html.Div([
         # Status badge + account filter
         filter_bar,
@@ -511,7 +515,7 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
         # Chart
         html.Div([
             html.Div([
-                section_header("Performance", "1Y total return vs S&P 500"),
+                section_header("Performance", f"{period_label} total return vs S&P 500"),
                 html.Span(chart_subtitle, style={"fontSize": "11px", "color": COLORS["text_tertiary"], "fontStyle": "italic"}),
             ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "marginBottom": "16px"}),
             html.Div(

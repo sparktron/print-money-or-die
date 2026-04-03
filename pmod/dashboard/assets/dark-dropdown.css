@@ -1,32 +1,86 @@
-/* Force dark theme for all Select/Dropdown components */
+/* Aggressive dark theme styling for all Dash Select/Dropdown components */
 
-/* Main dropdown control */
+/* Main control */
 .Select-control {
     background-color: #1f2937 !important;
-    border-color: #374151 !important;
+    border: 1px solid #374151 !important;
+    border-radius: 10px !important;
+    box-shadow: none !important;
     color: #e5e7eb !important;
 }
 
-/* Dropdown menu - uses position:fixed/absolute so we need global selector */
+.Select-control:hover {
+    box-shadow: none !important;
+    border-color: #4b5563 !important;
+}
+
+.Select-control.is-open {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
+}
+
+/* Control text and input */
+.Select-input > input {
+    background-color: transparent !important;
+    color: #e5e7eb !important;
+    border: none !important;
+}
+
+.Select-input > input::placeholder {
+    color: #9ca3af !important;
+}
+
+.Select-value-label {
+    color: #3b82f6 !important;
+    font-weight: 500 !important;
+}
+
+.Select-value {
+    color: #e5e7eb !important;
+}
+
+/* Arrow icon */
+.Select-arrow {
+    border-color: #9ca3af transparent transparent !important;
+    border-width: 5px 4px 0 4px !important;
+}
+
+.Select-control.is-open .Select-arrow {
+    border-color: transparent transparent #9ca3af transparent !important;
+}
+
+/* Dropdown menu - these are often rendered outside the normal flow */
 .Select-menu-outer {
     background-color: #111827 !important;
-    border-color: #374151 !important;
-    z-index: 1000 !important;
+    border: 1px solid #374151 !important;
+    border-radius: 0 0 10px 10px !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3) !important;
+    margin-top: -1px !important;
+    z-index: 9999 !important;
+}
+
+.Select-menu-outer.is-open {
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4) !important;
 }
 
 .Select-menu {
     background-color: #111827 !important;
-    max-height: 200px !important;
+    max-height: 300px !important;
 }
 
-/* Individual options */
+/* Individual option items */
 .Select-option {
     background-color: #111827 !important;
     color: #e5e7eb !important;
     padding: 8px 12px !important;
+    border: none !important;
 }
 
-.Select-option:hover,
+.Select-option:hover {
+    background-color: #1f2937 !important;
+    color: #e5e7eb !important;
+}
+
 .Select-option.is-focused {
     background-color: #1f2937 !important;
     color: #e5e7eb !important;
@@ -37,31 +91,26 @@
     color: #ffffff !important;
 }
 
-/* Placeholder and value text */
-.Select-input input {
-    color: #e5e7eb !important;
+.Select-option.is-selected:hover {
+    background-color: #2563eb !important;
+    color: #ffffff !important;
 }
 
-.Select-input input::placeholder {
+/* Search input within dropdown */
+.Select-input input,
+.Select-menu .Select-input input {
+    background-color: #1f2937 !important;
+    color: #e5e7eb !important;
+    border: 1px solid #374151 !important;
+    border-radius: 4px !important;
+    padding: 6px 8px !important;
+}
+
+/* Clearable button */
+.Select-clear {
     color: #9ca3af !important;
 }
 
-.Select-value-label {
-    color: #3b82f6 !important;
-}
-
-/* Arrow indicator */
-.Select-arrow {
-    border-top-color: #9ca3af !important;
-}
-
-.Select-arrow-zone {
-    background-color: transparent !important;
-}
-
-/* Search input in dropdown */
-.Select-input > input {
-    background-color: #111827 !important;
-    border: 1px solid #374151 !important;
+.Select-clear:hover {
     color: #e5e7eb !important;
 }
