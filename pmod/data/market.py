@@ -115,14 +115,19 @@ def get_quote(ticker: str) -> Quote | None:
 
     r = results[0]
     close = float(r.get("c", 0))
-    prev_open = float(r.get("o", close))
-    change_pct = ((close - prev_open) / prev_open * 100) if prev_open else 0.0
+    open_price = float(r.get("o", close))
+    # change_pct: intraday return for the previous trading session (close vs open).
+    # The /prev endpoint returns only one bar so a true day-over-day comparison
+    # is not possible without an additional API call.
+    change_pct = ((close - open_price) / open_price * 100) if open_price else 0.0
 
     return Quote(
         ticker=ticker.upper(),
         price=close,
         change_pct=round(change_pct, 2),
-        prev_close=float(r.get("c", 0)),
+        # prev_close stores the session open so callers have a meaningful
+        # reference price distinct from the closing price.
+        prev_close=open_price,
         volume=int(r.get("v", 0)),
     )
 

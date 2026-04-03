@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dash
+import plotly.graph_objects as go
 from dash import ALL, Input, Output, State, ctx, dcc, html, no_update, MATCH
 
 from pmod.dashboard.components import COLORS, FONT
@@ -105,11 +106,27 @@ def _build_nav() -> html.Div:
                 ),
             ),
             html.Div(
-                html.Span("LIVE", style={
-                    "fontSize": "10px", "fontWeight": "700", "color": COLORS["green"],
-                    "background": COLORS["green_bg"], "padding": "3px 10px",
-                    "borderRadius": "100px", "letterSpacing": "1.2px",
-                }),
+                [
+                    html.Button(
+                        "👁 Hide $",
+                        id="mask-toggle-btn",
+                        n_clicks=0,
+                        title="Toggle amount visibility",
+                        style={
+                            "fontSize": "11px", "fontWeight": "600",
+                            "color": COLORS["text_secondary"],
+                            "background": COLORS["surface_hover"],
+                            "border": f"1px solid {COLORS['border_accent']}",
+                            "borderRadius": "8px", "padding": "5px 12px",
+                            "cursor": "pointer", "letterSpacing": "0.3px",
+                        },
+                    ),
+                    html.Span("LIVE", style={
+                        "fontSize": "10px", "fontWeight": "700", "color": COLORS["green"],
+                        "background": COLORS["green_bg"], "padding": "3px 10px",
+                        "borderRadius": "100px", "letterSpacing": "1.2px",
+                    }),
+                ],
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
             ),
         ],
@@ -285,6 +302,12 @@ def _main_layout() -> html.Div:
                 style={"padding": "28px 32px 60px 32px", "maxWidth": "1440px", "margin": "0 auto", "width": "100%"},
             ),
             dcc.Interval(id="live-refresh", interval=60_000, n_intervals=0),
+            # Privacy mask toggle state (True = amounts hidden)
+            dcc.Store(id="mask-amounts-store", data=True),
+            # Selected account filter ("__all__" or an account name)
+            dcc.Store(id="account-filter-store", data="__all__"),
+            # Chart period: "1D" | "1W" | "1M" | "YTD" | "1Y"
+            dcc.Store(id="chart-period-store", data="1Y"),
             # Global trade modal + its backing store
             dcc.Store(id="trade-pending-store", data={}),
             _trade_modal(),
@@ -313,6 +336,19 @@ def create_app() -> dash.Dash:
         start_scheduler()
     except Exception:
         pass  # Non-critical — dashboard works without scheduler
+
+    # Update external account prices on dashboard launch (non-blocking)
+    try:
+        from pmod.analytics.external_updates import update_external_account_daily_values
+        import threading
+        update_thread = threading.Thread(
+            target=update_external_account_daily_values,
+            daemon=True,
+            name="external-account-updater"
+        )
+        update_thread.start()
+    except Exception:
+        pass  # Non-critical — dashboard works without latest external prices
 
     app.layout = html.Div(
         [
@@ -349,10 +385,52 @@ def create_app() -> dash.Dash:
 
     # ── Main tab rendering ─────────────────────────────────────────────────
 
-    @app.callback(Output("tab-content", "children"), Input("main-tabs", "value"))
-    def render_tab(tab: str) -> html.Div:
+    @app.callback(
+        Output("account-filter-store", "data"),
+        Input("account-filter-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def update_account_filter(value: str | None) -> str:
+        return value or "__all__"
+
+    @app.callback(
+        Output("chart-period-store", "data"),
+        Input({"type": "period-btn", "index": ALL}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def update_chart_period(n_clicks_list: list) -> str:
+        triggered = ctx.triggered_id
+        if triggered and isinstance(triggered, dict):
+            return triggered["index"]
+        return no_update
+
+    @app.callback(
+        Output("portfolio-chart", "figure"),
+        Input("chart-period-store", "data"),
+        Input("mask-amounts-store", "data"),
+        Input("account-filter-store", "data"),
+        prevent_initial_call=True,
+    )
+    def update_chart(period: str, masked: bool, account_filter: str | None) -> go.Figure:
+        from pmod.dashboard.pages.portfolio import build_chart_figure, _get_account_total
+        filter_acc = account_filter or "__all__"
+        total = _get_account_total(filter_acc)
+        return build_chart_figure(period=period or "1Y", masked=bool(masked), filter_account=filter_acc, total_value=total)
+
+    @app.callback(
+        Output("tab-content", "children"),
+        Input("main-tabs", "value"),
+        Input("mask-amounts-store", "data"),
+        Input("account-filter-store", "data"),
+        Input("chart-period-store", "data"),
+    )
+    def render_tab(tab: str, masked: bool, account_filter: str | None, chart_period: str | None) -> html.Div:
         if tab == "portfolio":
-            return portfolio_layout()
+            return portfolio_layout(
+                masked=bool(masked),
+                filter_account=account_filter or "__all__",
+                chart_period=chart_period or "1Y",
+            )
         if tab == "watchlist":
             return watchlist_layout()
         if tab == "politician_trades":
@@ -362,6 +440,21 @@ def create_app() -> dash.Dash:
         if tab == "settings":
             return settings_layout()
         return html.Div("Unknown tab.")
+
+    # ── Privacy mask toggle ─────────────────────────────────────────────────
+
+    @app.callback(
+        Output("mask-amounts-store", "data"),
+        Output("mask-toggle-btn", "children"),
+        Input("mask-toggle-btn", "n_clicks"),
+        State("mask-amounts-store", "data"),
+        prevent_initial_call=True,
+    )
+    def toggle_mask(n_clicks: int, currently_masked: bool) -> tuple[bool, str]:
+        new_state = not currently_masked
+        # Show 🚫 (red circle with slash) when amounts are hidden, normal 👁 when visible
+        label = "🚫 Show $" if new_state else "👁 Hide $"
+        return new_state, label
 
     # ── Settings save ──────────────────────────────────────────────────────
 
@@ -721,11 +814,12 @@ def create_app() -> dash.Dash:
         from pmod.preferences.profile import load_preferences_dict
 
         prefs = load_preferences_dict()
-        plan = compute_rebalance(max_position_pct=float(prefs.get("max_position_pct", 5.0)))
+        max_position_pct = float(prefs.get("max_position_pct", 5.0))
+        holistic_plan = compute_rebalance(max_position_pct=max_position_pct)
 
-        if not plan.trades:
+        if not holistic_plan.account_rebalances or all(not ar.trades for ar in holistic_plan.account_rebalances):
             return html.Span(
-                "No positions to rebalance — connect Schwab first.",
+                "No positions to rebalance — add accounts with positions first.",
                 style={"color": COLORS["text_tertiary"], "fontSize": "13px", "fontStyle": "italic"},
             ), no_update
 
@@ -743,97 +837,248 @@ def create_app() -> dash.Dash:
         }
         c_style_r = {**c_style, "textAlign": "right", "fontFamily": "'SF Mono','Fira Code',monospace"}
 
-        rows = []
-        for t in sorted(plan.trades, key=lambda x: abs(x.dollar_delta), reverse=True):
-            color = action_color.get(t.action, COLORS["text_tertiary"])
-            sign = "+" if t.shares_delta > 0 else ""
-            execute_btn = html.Button(
-                "Execute",
-                id={"type": "rebalance-execute", "ticker": t.ticker},
-                n_clicks=0,
+        # Count total unique positions across all accounts
+        all_tickers = set()
+        for ar in holistic_plan.account_rebalances:
+            for trade in ar.trades:
+                all_tickers.add(trade.ticker)
+
+        # Build reasoning preamble
+        preamble = html.Div([
+            html.Div(
+                "Signal-Driven Rebalancing",
+                style={"fontSize": "14px", "fontWeight": "600", "marginBottom": "12px", "color": COLORS["text_primary"]},
+            ),
+            html.Div([
+                html.Div(
+                    f"This holistic rebalance analyzes all {len(holistic_plan.account_rebalances)} accounts together "
+                    f"(Schwab + external accounts) and sizes trades based on market signals. "
+                    f"Positions are weighted by technical momentum (RSI, SMA, returns), Congressional sentiment "
+                    f"(buy/sell activity), and volatility. Strong buy signals → larger positions. Strong sell signals → reduce. "
+                    f"No fixed position caps — allocation is purely signal-driven across {len(all_tickers)} positions.",
+                    style={"fontSize": "13px", "color": COLORS["text_secondary"], "marginBottom": "12px", "lineHeight": "1.6"},
+                ),
+                html.Div([
+                    html.Div(
+                        "Portfolio perspective:",
+                        style={"fontSize": "12px", "fontWeight": "600", "color": COLORS["text_secondary"], "marginBottom": "8px"}
+                    ),
+                    html.Ul([
+                        html.Li(
+                            f"Total portfolio value: ${holistic_plan.portfolio_total_value:,.0f}",
+                            style={"fontSize": "12px", "color": COLORS["text_tertiary"], "marginBottom": "4px"}
+                        ),
+                        html.Li(
+                            f"Total positions: {len(all_tickers)} unique tickers",
+                            style={"fontSize": "12px", "color": COLORS["text_tertiary"], "marginBottom": "4px"}
+                        ),
+                        html.Li(
+                            f"Allocation based on: Momentum (RSI, SMA, 1m/3m returns) + Congressional signals + Volatility adjustments",
+                            style={"fontSize": "12px", "color": COLORS["text_tertiary"], "marginBottom": "4px"}
+                        ),
+                    ], style={"margin": "0", "paddingLeft": "20px"}),
+                ], style={"background": COLORS["surface_overlay"] if "surface_overlay" in COLORS else COLORS["surface"],
+                         "padding": "10px 12px", "borderRadius": "8px", "borderLeft": f"3px solid {COLORS['accent']}"}),
+            ], style={"fontSize": "13px", "color": COLORS["text_secondary"], "lineHeight": "1.6"}),
+        ], style={
+            "background": COLORS["surface"],
+            "border": f"1px solid {COLORS['border']}",
+            "borderRadius": "16px",
+            "padding": "16px",
+            "marginBottom": "24px",
+        })
+
+        # Build tables for each account
+        account_sections = []
+        all_trades_serialised = []
+
+        for acct_rebalance in holistic_plan.account_rebalances:
+            if not acct_rebalance.trades:
+                continue  # Skip accounts with no trades
+
+            rows = []
+            for t in sorted(acct_rebalance.trades, key=lambda x: abs(x.dollar_delta), reverse=True):
+                color = action_color.get(t.action, COLORS["text_tertiary"])
+                sign = "+" if t.shares_delta > 0 else ""
+                execute_btn = html.Button(
+                    "Execute",
+                    id={"type": "rebalance-execute", "ticker": t.ticker, "account": acct_rebalance.account_name},
+                    n_clicks=0,
+                    style={
+                        "padding": "6px 14px", "fontSize": "12px", "fontWeight": "600",
+                        "color": COLORS["text_primary"], "background": color,
+                        "border": "none", "borderRadius": "8px", "cursor": "pointer",
+                        "opacity": "0.9",
+                    },
+                ) if t.action != "hold" else html.Span("—", style={"color": COLORS["text_tertiary"]})
+
+                rows.append(html.Tr([
+                    html.Td(html.Div([
+                        html.Span(t.ticker, style={"fontWeight": "600"}),
+                        html.Span(f" {t.company_name}", style={"color": COLORS["text_tertiary"], "fontSize": "12px"}),
+                    ]), style=c_style),
+                    html.Td(f"{t.current_weight_pct:.1f}%", style=c_style_r),
+                    html.Td(f"{t.target_weight_pct:.1f}%", style=c_style_r),
+                    html.Td(
+                        html.Span(t.action.upper(), style={"color": color, "fontWeight": "700"}),
+                        style=c_style_r,
+                    ),
+                    html.Td(
+                        f"{sign}{t.shares_delta} shares",
+                        style={**c_style_r, "color": color},
+                    ),
+                    html.Td(
+                        f"{'+' if t.dollar_delta >= 0 else ''}${t.dollar_delta:,.0f}",
+                        style={**c_style_r, "color": color},
+                    ),
+                    html.Td(execute_btn, style={**c_style, "textAlign": "right"}),
+                ]))
+
+                all_trades_serialised.append({
+                    "ticker": t.ticker,
+                    "company_name": t.company_name,
+                    "current_price": t.current_price,
+                    "action": t.action,
+                    "shares_delta": t.shares_delta,
+                    "account": acct_rebalance.account_name,
+                })
+
+            # Account-level net cash impact
+            cash_sign = "+" if acct_rebalance.net_cash_change >= 0 else ""
+            summary_row = html.Tr([
+                html.Td(
+                    html.Span(f"Account Net Cash", style={"fontWeight": "600", "color": COLORS["text_secondary"]}),
+                    style={**c_style, "borderBottom": "none"}
+                ),
+                html.Td("", style={**c_style, "borderBottom": "none"}),
+                html.Td("", style={**c_style, "borderBottom": "none"}),
+                html.Td("", style={**c_style, "borderBottom": "none"}),
+                html.Td("", style={**c_style, "borderBottom": "none"}),
+                html.Td(
+                    f"{cash_sign}${acct_rebalance.net_cash_change:,.0f}",
+                    style={**c_style_r, "borderBottom": "none",
+                           "color": COLORS["green"] if acct_rebalance.net_cash_change >= 0 else COLORS["red"]},
+                ),
+                html.Td("", style={**c_style, "borderBottom": "none"}),
+            ])
+
+            table = html.Div(
+                html.Table(
+                    [
+                        html.Thead(html.Tr([
+                            html.Th("Asset", style=h_style),
+                            html.Th("Current %", style=h_style_r),
+                            html.Th("Target %", style=h_style_r),
+                            html.Th("Action", style=h_style_r),
+                            html.Th("Shares Δ", style=h_style_r),
+                            html.Th("$ Δ", style=h_style_r),
+                            html.Th("", style=h_style_r),
+                        ])),
+                        html.Tbody(rows + [summary_row]),
+                    ],
+                    style={"width": "100%", "borderCollapse": "collapse"},
+                ),
                 style={
-                    "padding": "6px 14px", "fontSize": "12px", "fontWeight": "600",
-                    "color": COLORS["text_primary"], "background": color,
-                    "border": "none", "borderRadius": "8px", "cursor": "pointer",
-                    "opacity": "0.9",
+                    "background": COLORS["surface"],
+                    "border": f"1px solid {COLORS['border']}",
+                    "borderRadius": "16px",
+                    "overflow": "hidden",
                 },
-            ) if t.action != "hold" else html.Span("—", style={"color": COLORS["text_tertiary"]})
+            )
 
-            rows.append(html.Tr([
-                html.Td(html.Div([
-                    html.Span(t.ticker, style={"fontWeight": "600"}),
-                    html.Span(f" {t.company_name}", style={"color": COLORS["text_tertiary"], "fontSize": "12px"}),
-                ]), style=c_style),
-                html.Td(f"{t.current_weight_pct:.1f}%", style=c_style_r),
-                html.Td(f"{t.target_weight_pct:.1f}%", style=c_style_r),
-                html.Td(
-                    html.Span(t.action.upper(), style={"color": color, "fontWeight": "700"}),
-                    style=c_style_r,
-                ),
-                html.Td(
-                    f"{sign}{t.shares_delta} shares",
-                    style={**c_style_r, "color": color},
-                ),
-                html.Td(
-                    f"{'+' if t.dollar_delta >= 0 else ''}${t.dollar_delta:,.0f}",
-                    style={**c_style_r, "color": color},
-                ),
-                html.Td(execute_btn, style={**c_style, "textAlign": "right"}),
-            ]))
+            # Build account-level reasoning based on signal-driven analysis
+            sells = [t for t in acct_rebalance.trades if t.action == "sell"]
+            buys = [t for t in acct_rebalance.trades if t.action == "buy"]
 
-        cash_sign = "+" if plan.net_cash_change >= 0 else ""
-        summary_row = html.Tr([
-            html.Td(html.Span("Net cash impact", style={"fontWeight": "600", "color": COLORS["text_secondary"]}), style={**c_style, "borderBottom": "none"}),
-            html.Td("", style={**c_style, "borderBottom": "none"}),
-            html.Td("", style={**c_style, "borderBottom": "none"}),
-            html.Td("", style={**c_style, "borderBottom": "none"}),
-            html.Td("", style={**c_style, "borderBottom": "none"}),
-            html.Td(
-                f"{cash_sign}${plan.net_cash_change:,.0f}",
-                style={**c_style_r, "borderBottom": "none",
-                       "color": COLORS["green"] if plan.net_cash_change >= 0 else COLORS["red"]},
+            sell_text = ""
+            if sells:
+                tickers_str = ", ".join([t.ticker for t in sells[:3]])
+                if len(sells) > 3:
+                    tickers_str += f", +{len(sells)-3} more"
+                sell_text = f"{len(sells)} position(s) show negative signals ({tickers_str}) — reducing exposure."
+
+            buy_text = ""
+            if buys:
+                tickers_str = ", ".join([t.ticker for t in buys[:3]])
+                if len(buys) > 3:
+                    tickers_str += f", +{len(buys)-3} more"
+                buy_text = f"{len(buys)} position(s) show strong buy signals ({tickers_str}) — increasing exposure."
+
+            account_reasoning = ""
+            if sell_text and buy_text:
+                account_reasoning = f"{sell_text} {buy_text}"
+            elif sell_text:
+                account_reasoning = sell_text
+            elif buy_text:
+                account_reasoning = buy_text
+            else:
+                account_reasoning = "All positions have neutral signals — holding at current allocation."
+
+            acct_account_type_label = f"({acct_rebalance.account_type})" if hasattr(acct_rebalance, 'account_type') and acct_rebalance.account_type else ""
+
+            account_sections.append(html.Div([
+                html.Div([
+                    html.Span(acct_rebalance.account_name, style={"fontWeight": "600", "fontSize": "14px"}),
+                    html.Span(f" {acct_account_type_label}", style={"color": COLORS["text_tertiary"], "fontSize": "12px"})
+                ], style={
+                    "marginBottom": "12px",
+                    "paddingBottom": "8px",
+                    "borderBottom": f"1px solid {COLORS['border']}",
+                }),
+                html.Div(
+                    account_reasoning,
+                    style={
+                        "fontSize": "13px",
+                        "color": COLORS["text_secondary"],
+                        "marginBottom": "14px",
+                        "lineHeight": "1.5",
+                        "padding": "10px 12px",
+                        "background": COLORS["surface_overlay"] if "surface_overlay" in COLORS else COLORS["surface"],
+                        "borderRadius": "8px",
+                        "borderLeft": f"3px solid {COLORS['accent']}",
+                    }
+                ),
+                table,
+            ], style={"marginBottom": "20px"}))
+
+        # Portfolio-wide summary
+        cash_sign = "+" if holistic_plan.portfolio_net_cash_change >= 0 else ""
+        portfolio_summary = html.Div([
+            html.Div(
+                html.Span("Portfolio Summary", style={"fontWeight": "600", "fontSize": "14px"}),
+                style={
+                    "marginBottom": "12px",
+                    "paddingBottom": "8px",
+                    "borderBottom": f"1px solid {COLORS['border']}",
+                },
             ),
-            html.Td("", style={**c_style, "borderBottom": "none"}),
-        ])
+            html.Div([
+                html.Div(
+                    f"Total Value: ${holistic_plan.portfolio_total_value:,.0f}",
+                    style={"fontSize": "13px", "color": COLORS["text_secondary"], "marginBottom": "8px"},
+                ),
+                html.Div(
+                    f"Net Portfolio Cash Change: {cash_sign}${holistic_plan.portfolio_net_cash_change:,.0f}",
+                    style={
+                        "fontSize": "13px",
+                        "color": COLORS["green"] if holistic_plan.portfolio_net_cash_change >= 0 else COLORS["red"],
+                        "fontWeight": "600",
+                    },
+                ),
+            ]),
+        ], style={
+            "background": COLORS["surface"],
+            "border": f"1px solid {COLORS['border']}",
+            "borderRadius": "16px",
+            "padding": "16px",
+        })
 
-        table = html.Div(
-            html.Table(
-                [
-                    html.Thead(html.Tr([
-                        html.Th("Asset", style=h_style),
-                        html.Th("Current %", style=h_style_r),
-                        html.Th("Target %", style=h_style_r),
-                        html.Th("Action", style=h_style_r),
-                        html.Th("Shares Δ", style=h_style_r),
-                        html.Th("$ Δ", style=h_style_r),
-                        html.Th("", style=h_style_r),
-                    ])),
-                    html.Tbody(rows + [summary_row]),
-                ],
-                style={"width": "100%", "borderCollapse": "collapse"},
-            ),
-            style={
-                "background": COLORS["surface"],
-                "border": f"1px solid {COLORS['border']}",
-                "borderRadius": "16px",
-                "overflow": "hidden",
-            },
-        )
+        content = html.Div([preamble] + account_sections + [portfolio_summary])
 
-        # Cache the plan in the store so rebalance-execute buttons can read trade details
-        trades_serialised = [
-            {
-                "ticker": t.ticker,
-                "company_name": t.company_name,
-                "current_price": t.current_price,
-                "action": t.action,
-                "shares_delta": t.shares_delta,
-            }
-            for t in plan.trades
-        ]
-        updated_store = {**store, "_rebalance_plan": {"trades": trades_serialised}}
+        # Cache all trades in the store
+        updated_store = {**store, "_rebalance_plan": {"trades": all_trades_serialised}}
 
-        return table, updated_store
+        return content, updated_store
 
     # ── Advisor: populate textarea from suggestion chips ───────────────────
 

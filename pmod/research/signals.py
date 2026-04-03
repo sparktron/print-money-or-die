@@ -7,6 +7,7 @@ score that feeds the screener and watchlist.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 
 import structlog
@@ -23,6 +24,11 @@ class TrendSignal:
     momentum_score: float         # -1.0 (strong sell) to +1.0 (strong buy)
     volatility_pct: float | None  # annualised std-dev of daily returns
     data_points: int              # how many daily closes were available
+
+
+# Simple in-memory cache for trend results to avoid refetching within TTL window
+_TREND_CACHE: dict[str, tuple[TrendSignal, float]] = {}  # {ticker: (TrendSignal, timestamp)}
+_TREND_CACHE_TTL = 3600  # 1 hour in seconds
 
 
 def compute_rsi(closes: list[float], period: int = 14) -> float | None:
@@ -89,7 +95,7 @@ def compute_volatility(closes: list[float], annualise: bool = True) -> float | N
     log_returns = [
         math.log(closes[i] / closes[i - 1])
         for i in range(1, len(closes))
-        if closes[i - 1] > 0
+        if closes[i - 1] > 0 and closes[i] > 0  # log(0) is undefined
     ]
     if len(log_returns) < 4:
         return None
@@ -139,21 +145,82 @@ def compute_momentum_score(closes: list[float]) -> float:
 
 
 def compute_trend(ticker: str) -> TrendSignal:
-    """Full technical assessment for *ticker*, pulling live price data.
+    """Full technical assessment for *ticker*, using cached closing prices.
 
-    Gracefully degrades if market data is unavailable — returns a neutral
-    signal with whatever data was available.
+    Pulls from the ClosingPrice cache (populated nightly via Yahoo Finance).
+    Falls back to live Polygon fetch if cache is empty. Results are cached
+    in-memory for 1 hour to avoid repeated DB queries.
     """
-    from pmod.data.market import get_price_history
+    ticker = ticker.upper()
+    now = time.time()
 
-    history = get_price_history(ticker, days=120)
-    closes = history.closes if history else []
+    # Check in-memory cache
+    if ticker in _TREND_CACHE:
+        cached_signal, cached_at = _TREND_CACHE[ticker]
+        age = now - cached_at
+        if age < _TREND_CACHE_TTL:
+            log.debug("trend_cache_hit", ticker=ticker, age_sec=round(age, 1))
+            return cached_signal
 
-    return TrendSignal(
-        ticker=ticker.upper(),
+    # Try to load from database cache first
+    closes = _load_cached_closes(ticker)
+
+    # Fall back to live Polygon fetch if cache is empty
+    if not closes:
+        from pmod.data.market import get_price_history
+
+        history = get_price_history(ticker, days=120)
+        closes = history.closes if history else []
+        if closes:
+            log.debug("trend_fallback_polygon", ticker=ticker, days=len(closes))
+
+    signal = TrendSignal(
+        ticker=ticker,
         rsi_14=compute_rsi(closes),
         sma_crossover=compute_sma_crossover(closes),
         momentum_score=compute_momentum_score(closes),
         volatility_pct=compute_volatility(closes),
         data_points=len(closes),
     )
+
+    # Store in in-memory cache
+    _TREND_CACHE[ticker] = (signal, now)
+
+    return signal
+
+
+def _load_cached_closes(ticker: str) -> list[float]:
+    """Load closing prices for *ticker* from the database cache.
+
+    Returns prices in chronological order (oldest to newest).
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        from pmod.data.models import ClosingPrice, get_session
+
+        # Load last 120 days of cached closes
+        cutoff = datetime.utcnow() - timedelta(days=130)
+
+        with get_session() as session:
+            rows = (
+                session.query(ClosingPrice)
+                .filter(
+                    ClosingPrice.ticker == ticker,
+                    ClosingPrice.date >= cutoff,
+                )
+                .order_by(ClosingPrice.date.asc())
+                .all()
+            )
+
+            if not rows:
+                log.debug("cache_closes_empty", ticker=ticker)
+                return []
+
+            closes = [float(r.close) for r in rows]
+            log.debug("cache_closes_loaded", ticker=ticker, days=len(closes))
+            return closes
+
+    except Exception as exc:
+        log.warning("cache_closes_load_failed", ticker=ticker, error=str(exc)[:60])
+        return []

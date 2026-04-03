@@ -55,11 +55,29 @@ def _run_research() -> None:
         log.error("scheduled_research_failed", error=str(exc)[:120])
 
 
-def _run_rebalance() -> None:
-    """Preview a rebalance and execute if user has opted into auto-execution.
+def _fetch_congress_trades() -> None:
+    """Fetch the latest congressional trade disclosures.
 
-    Respects the trade_execution preference — only places orders when set
-    to 'auto'.  Otherwise just logs the suggested trades.
+    Runs daily to keep politician trades database up-to-date.
+    """
+    try:
+        from pmod.data.politician_trades import fetch_and_store_trades
+
+        counts = fetch_and_store_trades()
+        log.info(
+            "congress_trades_fetched",
+            senate=counts.get("senate", 0),
+            errors=counts.get("errors", 0),
+        )
+    except Exception as exc:
+        log.error("congress_trades_fetch_failed", error=str(exc)[:120])
+
+
+def _run_rebalance() -> None:
+    """Preview a portfolio-wide rebalance and execute if user has opted into auto-execution.
+
+    Considers all accounts (Schwab + external) and respects the trade_execution preference.
+    Only places orders to Schwab account (external accounts require manual rebalancing).
     """
     try:
         from pmod.optimizer.portfolio import compute_rebalance
@@ -69,17 +87,29 @@ def _run_rebalance() -> None:
         max_pos = float(prefs.get("max_position_pct", 5.0))
         execution = prefs.get("trade_execution", "manual-confirm")
 
-        plan = compute_rebalance(max_position_pct=max_pos)
-        actionable = [t for t in plan.trades if t.action != "hold"]
+        holistic_plan = compute_rebalance(max_position_pct=max_pos)
 
-        if not actionable:
+        # Collect all actionable trades from all accounts
+        all_actionable = []
+        schwab_actionable = []
+
+        for acct_rebalance in holistic_plan.account_rebalances:
+            actionable = [t for t in acct_rebalance.trades if t.action != "hold"]
+            all_actionable.extend(actionable)
+            if "Schwab" in acct_rebalance.account_name:
+                schwab_actionable.extend(actionable)
+
+        if not all_actionable:
             log.info("scheduled_rebalance_no_action")
             return
 
         log.info(
             "scheduled_rebalance_preview",
-            trades=len(actionable),
-            net_cash=round(plan.net_cash_change, 2),
+            accounts=len(holistic_plan.account_rebalances),
+            portfolio_trades=len(all_actionable),
+            schwab_trades=len(schwab_actionable),
+            net_cash=round(holistic_plan.portfolio_net_cash_change, 2),
+            portfolio_value=round(holistic_plan.portfolio_total_value, 2),
         )
 
         if execution != "auto":
@@ -88,7 +118,8 @@ def _run_rebalance() -> None:
 
         from pmod.broker.schwab import OrderRequest, place_order
 
-        for t in actionable:
+        # Execute only Schwab trades (other accounts require manual rebalancing)
+        for t in schwab_actionable:
             if t.shares_delta == 0:
                 continue
             req = OrderRequest(
@@ -111,32 +142,182 @@ def _run_rebalance() -> None:
 
 
 def _capture_snapshot() -> None:
-    """Record a daily portfolio snapshot for historical tracking."""
+    """Record a daily portfolio snapshot for historical tracking.
+
+    Sums all accounts — Schwab brokerage + external accounts — so the
+    stored total_value matches what the dashboard shows.
+    """
     try:
-        from pmod.broker.schwab import get_account_summary
+        from pmod.broker.schwab import get_all_account_summaries
+        from pmod.data.external_accounts import list_accounts
         from pmod.data.models import PortfolioSnapshot, get_session
 
-        summary = get_account_summary()
-        if summary is None:
-            log.debug("snapshot_skipped_no_account")
+        total_value = 0.0
+        cash_balance = 0.0
+        day_pnl = 0.0
+        num_positions = 0
+
+        try:
+            schwab_summaries = get_all_account_summaries()
+            for s in schwab_summaries:
+                total_value += s.total_value
+                cash_balance += s.cash_balance
+                day_pnl += s.day_pnl
+                num_positions += len(s.positions)
+        except Exception as exc:
+            log.warning("snapshot_schwab_fetch_failed", error=str(exc)[:120])
+
+        try:
+            for ext in list_accounts():
+                total_value += ext["total_value"]
+        except Exception as exc:
+            log.warning("snapshot_external_fetch_failed", error=str(exc)[:120])
+
+        if total_value == 0.0:
+            log.debug("snapshot_skipped_no_data")
             return
 
         with get_session() as session:
             snapshot = PortfolioSnapshot(
-                total_value=summary.total_value,
-                cash_balance=summary.cash_balance,
-                day_pnl=summary.day_pnl,
-                num_positions=len(summary.positions),
+                total_value=total_value,
+                cash_balance=cash_balance,
+                day_pnl=day_pnl,
+                num_positions=num_positions,
             )
             session.add(snapshot)
 
         log.info(
             "portfolio_snapshot_captured",
-            total_value=round(summary.total_value, 2),
-            positions=len(summary.positions),
+            total_value=round(total_value, 2),
+            positions=num_positions,
         )
     except Exception as exc:
         log.error("snapshot_capture_failed", error=str(exc)[:120])
+
+
+def _cache_closing_prices() -> None:
+    """Cache historical closing prices from Yahoo Finance for all portfolio tickers.
+
+    Stores closing prices in the database so trend analysis doesn't need to
+    fetch from external APIs. Runs nightly to keep data fresh.
+    """
+    try:
+        from pmod.broker.schwab import get_account_summary
+        from pmod.data.external_accounts import list_accounts, get_positions as get_ext_positions
+        from pmod.data.models import ClosingPrice, get_session
+        from pmod.data.yahoo_finance import get_closing_prices
+
+        # Collect all unique tickers from Schwab + external accounts
+        tickers = set()
+
+        # Schwab positions
+        schwab = get_account_summary()
+        if schwab and schwab.positions:
+            for pos in schwab.positions:
+                tickers.add(pos.ticker)
+
+        # External positions
+        for ext_acct in list_accounts():
+            for pos in get_ext_positions(ext_acct["name"]):
+                tickers.add(pos.ticker)
+
+        if not tickers:
+            log.debug("cache_closing_prices_no_tickers")
+            return
+
+        cached_count = 0
+        failed_count = 0
+
+        with get_session() as session:
+            for ticker in sorted(tickers):
+                closes = get_closing_prices(ticker, days=120)
+                if not closes:
+                    failed_count += 1
+                    continue
+
+                # Store in database, skipping duplicates
+                for bar_date, close_price in closes.items():
+                    existing = (
+                        session.query(ClosingPrice)
+                        .filter_by(ticker=ticker, date=bar_date)
+                        .first()
+                    )
+                    if not existing:
+                        session.add(
+                            ClosingPrice(
+                                ticker=ticker,
+                                date=bar_date,
+                                close=close_price,
+                            )
+                        )
+                        cached_count += 1
+
+        log.info(
+            "closing_prices_cached",
+            tickers=len(tickers),
+            prices_stored=cached_count,
+            fetch_failures=failed_count,
+        )
+    except Exception as exc:
+        log.error("cache_closing_prices_failed", error=str(exc)[:120])
+
+
+def _update_external_accounts() -> None:
+    """Update external account positions with current market prices.
+
+    Reads share counts from external_positions_config.csv, fetches prices,
+    and stores daily snapshots.
+    """
+    try:
+        from pmod.analytics.external_updates import update_external_account_daily_values
+
+        update_external_account_daily_values()
+    except Exception as exc:
+        log.error("external_accounts_update_failed", error=str(exc)[:120])
+
+
+def _capture_benchmark_snapshot() -> None:
+    """Record daily S&P 500 closing price for alpha calculation."""
+    try:
+        from pmod.data.market import get_quote
+        from pmod.data.models import BenchmarkSnapshot, get_session
+
+        quote = get_quote("SPY")
+        if quote is None:
+            log.debug("benchmark_snapshot_skipped_no_quote")
+            return
+
+        with get_session() as session:
+            snapshot = BenchmarkSnapshot(
+                ticker="SPY",
+                close_price=quote.price,
+            )
+            session.add(snapshot)
+
+        log.info(
+            "benchmark_snapshot_captured",
+            ticker="SPY",
+            price=round(quote.price, 2),
+        )
+    except Exception as exc:
+        log.error("benchmark_snapshot_failed", error=str(exc)[:120])
+
+
+def _is_price_cache_stale() -> bool:
+    """Return True if the closing price cache has no data from the last 24 hours."""
+    try:
+        from datetime import datetime, timedelta
+
+        from pmod.data.models import ClosingPrice, get_session
+
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        with get_session() as session:
+            # Compare against the full datetime, not just the date, so we don't
+            # accidentally match rows from earlier today that fall before cutoff.
+            row = session.query(ClosingPrice).filter(ClosingPrice.date >= cutoff).first()
+            return row is None
+    except Exception:
+        return True  # Assume stale if we can't check
 
 
 def start_scheduler() -> BackgroundScheduler:
@@ -168,12 +349,47 @@ def start_scheduler() -> BackgroundScheduler:
         misfire_grace_time=300,
     )
 
-    # Research pass — daily at 6:00 AM ET (before market open)
+    # Congress trades fetch — daily at 6:30 AM ET (before market open)
+    _scheduler.add_job(
+        _fetch_congress_trades,
+        trigger=CronTrigger(hour=6, minute=30),
+        id="daily_congress_trades",
+        name="Daily congress trades fetch",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # Cache closing prices — daily at 6:45 AM ET (before market open, after congress trades).
+    # Also runs immediately at startup if the cache is stale so signals have data on first load.
+    from datetime import datetime as _dt
+
+    _startup_run_time = _dt.now() if _is_price_cache_stale() else None
+    _scheduler.add_job(
+        _cache_closing_prices,
+        trigger=CronTrigger(hour=6, minute=45),
+        id="daily_cache_prices",
+        name="Daily closing prices cache from Yahoo Finance",
+        replace_existing=True,
+        misfire_grace_time=3600,
+        next_run_time=_startup_run_time,
+    )
+
+    # Research pass — daily at 7:00 AM ET (before market open, after cache)
     _scheduler.add_job(
         _run_research,
-        trigger=CronTrigger(hour=6, minute=0),
+        trigger=CronTrigger(hour=7, minute=0),
         id="daily_research",
         name="Daily research pass",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # External account update — daily at 4:25 PM ET (after market close, 5 min before portfolio)
+    _scheduler.add_job(
+        _update_external_accounts,
+        trigger=CronTrigger(hour=16, minute=25),
+        id="external_accounts_update",
+        name="Daily external account price update",
         replace_existing=True,
         misfire_grace_time=3600,
     )
@@ -184,6 +400,16 @@ def start_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(hour=16, minute=30),
         id="daily_snapshot",
         name="Daily portfolio snapshot",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # Benchmark snapshot — daily at 4:35 PM ET (after market close, 5 min after portfolio)
+    _scheduler.add_job(
+        _capture_benchmark_snapshot,
+        trigger=CronTrigger(hour=16, minute=35),
+        id="daily_benchmark",
+        name="Daily S&P 500 benchmark snapshot",
         replace_existing=True,
         misfire_grace_time=3600,
     )

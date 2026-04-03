@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import functools
+import os
 from dataclasses import dataclass, field
 
 import structlog
@@ -174,10 +175,11 @@ def get_account_summary() -> AccountSummary | None:
     positions = _parse_positions(raw_positions, total_value)
     day_pnl = sum(p.day_pnl for p in positions)
 
+    _dev = os.getenv("PMOD_DEV_MASK", "true").lower() in ("true", "1", "yes")
     log.info(
         "schwab_account_loaded",
         positions=len(positions),
-        total_value=total_value,
+        total_value=("*" * max(0, len(str(int(total_value))) - 3) + str(int(total_value))[-3:]) if _dev else total_value,
     )
 
     return AccountSummary(
@@ -187,6 +189,62 @@ def get_account_summary() -> AccountSummary | None:
         day_pnl=day_pnl,
         positions=positions,
     )
+
+
+def get_all_account_summaries() -> list[AccountSummary]:
+    """Fetch balances and positions for ALL linked Schwab accounts.
+
+    Includes external accounts that may have no individual positions.
+    Returns an empty list on any API or auth failure.
+    """
+    from schwab.client import Client
+
+    from pmod.auth.schwab import get_client
+
+    try:
+        schwab_limiter.acquire()
+        client = get_client()
+        resp = client.get_accounts(fields=[Client.Account.Fields.POSITIONS])
+        resp.raise_for_status()
+        accounts: list[dict] = resp.json()
+    except Exception as exc:
+        log.error("schwab_get_all_accounts_failed", error=str(exc))
+        return []
+
+    if not accounts:
+        log.warning("schwab_no_accounts_returned")
+        return []
+
+    summaries: list[AccountSummary] = []
+    for raw_account in accounts:
+        acct = _unwrap_account(raw_account)
+        balances = acct.get("currentBalances", {})
+
+        total_value = float(
+            balances.get("liquidationValue")
+            or balances.get("equity")
+            or balances.get("accountValue")
+            or 0
+        )
+        cash_balance = float(balances.get("cashBalance", 0))
+
+        raw_positions = acct.get("positions", [])
+        positions = _parse_positions(raw_positions, total_value) if raw_positions else []
+        day_pnl = sum(p.day_pnl for p in positions)
+
+        summaries.append(
+            AccountSummary(
+                account_number=str(acct.get("accountNumber", "")),
+                total_value=total_value,
+                cash_balance=cash_balance,
+                day_pnl=day_pnl,
+                positions=positions,
+            )
+        )
+
+    _dev = os.getenv("PMOD_DEV_MASK", "true").lower() in ("true", "1", "yes")
+    log.info("schwab_all_accounts_loaded", count=len(summaries), dev_mask=_dev)
+    return summaries
 
 
 def place_order(request: OrderRequest) -> OrderResult:

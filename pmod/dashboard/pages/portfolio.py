@@ -1,17 +1,21 @@
 """Portfolio performance view — live Schwab data with sample fallback."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import plotly.graph_objects as go
 from dash import dcc, html
 
-from pmod.broker.schwab import AccountSummary, Position, get_account_summary
+from pmod.analytics.alpha import calculate_alpha, get_account_historical_returns, get_historical_returns
+from pmod.broker.schwab import AccountSummary, Position, get_all_account_summaries
+from pmod.data.external_accounts import list_accounts, get_positions
 from pmod.dashboard.components import (
     CHART_LAYOUT,
     COLORS,
     MONO,
     kpi_card,
+    mask_number,
+    mask_pct,
     section_header,
     status_badge,
 )
@@ -38,36 +42,160 @@ def _sample_account() -> dict:
 
 # ── Chart ──────────────────────────────────────────────────────────────────
 
-def _build_chart(total_value: float) -> dcc.Graph:
-    """Simulated 1-year performance chart (historical snapshots not yet tracked)."""
-    dates = [
-        (datetime(2025, 3, 26) - timedelta(days=364 - i)).strftime("%Y-%m-%d")
-        for i in range(365)
-    ]
-    start = total_value * 0.78
-    portfolio = [start + (total_value - start) * (i / 364) + ((i % 7 - 3) * start * 0.002) for i in range(365)]
-    sp500 = [start * 0.97 + (total_value * 0.93 - start * 0.97) * (i / 364) + ((i % 7 - 3) * start * 0.0015) for i in range(365)]
+def _get_account_total(filter_account: str) -> float:
+    """Return total current value for the given account filter (used by the chart callback)."""
+    if filter_account == "__all__":
+        total = 0.0
+        try:
+            from pmod.broker.schwab import get_all_account_summaries
+            total += sum(s.total_value for s in get_all_account_summaries())
+        except Exception:
+            pass
+        for ext in list_accounts():
+            total += ext["total_value"]
+        return total
+    # External account by name
+    for ext in list_accounts():
+        if ext["name"] == filter_account:
+            return ext["total_value"]
+    # Schwab account — match by label "Schwab ···XXXX"
+    try:
+        from pmod.broker.schwab import get_all_account_summaries
+        for s in get_all_account_summaries():
+            label = f"Schwab ···{s.account_number[-4:]}" if s.account_number else "Schwab"
+            if label == filter_account:
+                return s.total_value
+    except Exception:
+        pass
+    return 0.0
+
+
+_PERIODS = [
+    ("1W",  "1 Week"),
+    ("1M",  "1 Month"),
+    ("YTD", "YTD"),
+    ("1Y",  "1 Year"),
+]
+
+
+def _period_cutoff(period: str) -> date:
+    today = date.today()
+    if period == "1W":
+        return today - timedelta(weeks=1)
+    if period == "1M":
+        return today - timedelta(days=30)
+    if period == "YTD":
+        return date(today.year, 1, 1)
+    return today - timedelta(days=365)  # 1Y default
+
+
+def build_chart_figure(
+    period: str = "1Y",
+    total_value: float = 0,
+    masked: bool = True,
+    filter_account: str = "__all__",
+) -> go.Figure:
+    """Return a % return from period-start figure.  Called by the Dash callback."""
+    cutoff = _period_cutoff(period)
+    days_back = (date.today() - cutoff).days + 5
+
+    if filter_account and filter_account != "__all__":
+        hist_result = get_account_historical_returns(account_name=filter_account, days=days_back)
+    else:
+        hist_result = get_historical_returns(days=days_back)
+
+    is_real = False
+    if hist_result is not None and len(hist_result[2]) >= 2:
+        portfolio_values_all, benchmark_values_all, dates_all = hist_result
+        paired = [
+            (d, p, b)
+            for d, p, b in zip(dates_all, portfolio_values_all, benchmark_values_all)
+            if d >= cutoff.strftime("%Y-%m-%d")
+        ]
+        if len(paired) >= 2:
+            dates = [r[0] for r in paired]
+            p0, b0 = paired[0][1], paired[0][2]
+            # Convert to % return from period start
+            portfolio_pct = [(p / p0 - 1) * 100 for _, p, _ in paired]
+            benchmark_pct = [(b / b0 - 1) * 100 for _, _, b in paired]
+            is_real = True
+
+    if not is_real:
+        n = {"1W": 7, "1M": 30, "YTD": max((date.today() - date(date.today().year, 1, 1)).days, 2), "1Y": 365}.get(period, 365)
+        dates = [(datetime.now() - timedelta(days=n - 1 - i)).strftime("%Y-%m-%d") for i in range(n)]
+        portfolio_pct = [0 + (12 * i / max(n - 1, 1)) + ((i % 7 - 3) * 0.3) for i in range(n)]
+        benchmark_pct = [0 + (10 * i / max(n - 1, 1)) + ((i % 7 - 3) * 0.25) for i in range(n)]
+
+    last_p = portfolio_pct[-1]
+    last_b = benchmark_pct[-1]
+    p_sign = "+" if last_p >= 0 else ""
+    b_sign = "+" if last_b >= 0 else ""
+
+    portfolio_color = COLORS["green"] if last_p >= 0 else COLORS["red"]
+    chart_fill = COLORS["green_bg"] if last_p >= 0 else "rgba(239,68,68,0.06)"
+
+    hover_p = "<b>masked</b>" if masked else f"%{{y:.2f}}%"
+    hover_b = "<b>masked</b>" if masked else f"%{{y:.2f}}%"
 
     fig = go.Figure()
+
+    # Zero reference line
+    fig.add_hline(y=0, line=dict(color=COLORS["border"], width=1, dash="dot"))
+
     fig.add_trace(go.Scatter(
-        x=dates, y=portfolio, mode="lines", name="Portfolio",
-        line=dict(color=COLORS["accent"], width=2),
-        fill="tozeroy", fillcolor=COLORS["chart_area"],
-        hovertemplate="<b>Portfolio</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
+        x=dates, y=portfolio_pct, mode="lines", name=f"Portfolio ({p_sign}{last_p:.1f}%)",
+        line=dict(color=portfolio_color, width=2.5),
+        fill="tozeroy", fillcolor=chart_fill,
+        hovertemplate=f"<b>Portfolio</b><br>%{{x}}<br>{hover_p}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
-        x=dates, y=sp500, mode="lines", name="S&P 500",
+        x=dates, y=benchmark_pct, mode="lines", name=f"S&P 500 ({b_sign}{last_b:.1f}%)",
         line=dict(color=COLORS["text_tertiary"], width=1.5, dash="dot"),
-        hovertemplate="<b>S&P 500</b><br>%{x}<br>$%{y:,.0f}<extra></extra>",
+        hovertemplate=f"<b>S&P 500</b><br>%{{x}}<br>{hover_b}<extra></extra>",
     ))
 
-    layout = {**CHART_LAYOUT, "height": 380, "margin": dict(l=0, r=0, t=10, b=0)}
+    tick_fmt = "%b %d" if period in ("1W", "1M") else "%b '%y"
+    dtick = "D7" if period == "1W" else ("M1" if period == "1M" else "M2")
+    layout = {**CHART_LAYOUT, "height": 360, "margin": dict(l=0, r=0, t=10, b=0)}
     layout["legend"] = dict(**CHART_LAYOUT["legend"], orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    layout["xaxis"] = {**CHART_LAYOUT["xaxis"], "type": "date", "tickformat": "%b '%y", "dtick": "M2"}
-    layout["yaxis"] = {**CHART_LAYOUT["yaxis"], "tickprefix": "$", "tickformat": ",.0f"}
+    layout["xaxis"] = {**CHART_LAYOUT["xaxis"], "type": "date", "tickformat": tick_fmt, "dtick": dtick}
+    layout["yaxis"] = {**CHART_LAYOUT["yaxis"], "ticksuffix": "%", "tickformat": ".1f", "zeroline": False}
     fig.update_layout(**layout)
+    return fig
 
-    return dcc.Graph(id="portfolio-chart", figure=fig, config={"displayModeBar": False}, style={"borderRadius": "12px"})
+
+def _build_chart(total_value: float, masked: bool, period: str = "1Y", filter_account: str = "__all__") -> html.Div:
+    """Chart area: period toggle buttons + the Plotly graph."""
+    btn_base = {
+        "background": "transparent",
+        "border": f"1px solid {COLORS['border']}",
+        "color": COLORS["text_tertiary"],
+        "padding": "5px 14px",
+        "fontSize": "12px",
+        "fontWeight": "600",
+        "borderRadius": "8px",
+        "cursor": "pointer",
+        "transition": "all 0.15s",
+    }
+    btn_active = {**btn_base, "background": COLORS["accent"], "color": COLORS["bg"], "borderColor": COLORS["accent"]}
+
+    buttons = html.Div(
+        [
+            html.Button(
+                label,
+                id={"type": "period-btn", "index": key},
+                style=btn_active if key == period else btn_base,
+                n_clicks=0,
+            )
+            for key, label in _PERIODS
+        ],
+        style={"display": "flex", "gap": "6px"},
+    )
+
+    fig = build_chart_figure(period=period, total_value=total_value, masked=masked, filter_account=filter_account)
+    graph = dcc.Graph(id="portfolio-chart", figure=fig, config={"displayModeBar": False})
+
+    return html.Div([buttons, graph], style={"display": "flex", "flexDirection": "column", "gap": "14px"})
 
 
 # ── Positions table ────────────────────────────────────────────────────────
@@ -82,49 +210,72 @@ def _weight_bar(pct: float) -> html.Div:
     )
 
 
-def _positions_table(rows_data: list[dict]) -> html.Div:
+def _positions_table(rows_data: list[dict], masked: bool, show_pnl: bool = True) -> html.Div:
     h = {"fontSize": "11px", "fontWeight": "600", "color": COLORS["text_tertiary"],
          "textTransform": "uppercase", "letterSpacing": "0.8px",
          "padding": "12px 16px", "textAlign": "left", "borderBottom": f"1px solid {COLORS['border']}"}
     hr = {**h, "textAlign": "right"}
 
-    headers = html.Tr([
+    header_cells = [
         html.Th("Asset", style=h),
         html.Th("Shares", style=hr),
         html.Th("Avg Cost", style=hr),
         html.Th("Price", style=hr),
         html.Th("Value", style=hr),
-        html.Th("Day P&L", style=hr),
-        html.Th("Total P&L", style=hr),
-        html.Th("Weight", style=hr),
-    ])
+    ]
+    if show_pnl:
+        header_cells += [html.Th("Day P&L", style=hr), html.Th("Total P&L", style=hr)]
+    header_cells.append(html.Th("Weight", style=hr))
+    headers = html.Tr(header_cells)
 
     cell = {"padding": "14px 16px", "borderBottom": f"1px solid {COLORS['border']}", "fontSize": "14px", "color": COLORS["text_primary"]}
     cell_r = {**cell, "textAlign": "right", "fontFamily": MONO}
+    dash_style = {**cell_r, "color": COLORS["text_tertiary"]}
 
     table_rows = []
     for p in rows_data:
-        day_color = COLORS["green"] if p["day_pnl"] >= 0 else COLORS["red"]
-        total_color = COLORS["green"] if p["total_pnl"] >= 0 else COLORS["red"]
-        day_sign = "+" if p["day_pnl"] >= 0 else ""
-        total_sign = "+" if p["total_pnl"] >= 0 else ""
+        shares = p.get("shares") or 0
+        shares_str = (
+            f"{shares:.4f}".rstrip("0").rstrip(".")
+            if shares and shares != int(shares)
+            else (str(int(shares)) if shares else "—")
+        )
+        avg_cost = p.get("avg_cost") or 0
+        current_price = p.get("current_price") or 0
+        avg_cost_str = mask_number(avg_cost, masked=masked) if avg_cost else "—"
+        current_price_str = mask_number(current_price, masked=masked) if current_price else "—"
+        market_value_str = mask_number(p["market_value"], masked=masked)
 
-        shares_str = f"{p['shares']:.4f}".rstrip("0").rstrip(".") if p["shares"] != int(p["shares"]) else str(int(p["shares"]))
-
-        table_rows.append(html.Tr([
+        row_cells = [
             html.Td(html.Div([
                 html.Span(p["ticker"], style={"fontWeight": "600", "fontSize": "14px", "color": COLORS["text_primary"]}),
                 html.Br(),
                 html.Span(p["name"], style={"fontSize": "12px", "color": COLORS["text_tertiary"]}),
             ]), style=cell),
-            html.Td(shares_str, style=cell_r),
-            html.Td(f"${p['avg_cost']:,.2f}", style=cell_r),
-            html.Td(f"${p['current_price']:,.2f}", style=cell_r),
-            html.Td(f"${p['market_value']:,.0f}", style=cell_r),
-            html.Td(html.Span(f"{day_sign}{p['day_pnl']:,.0f} ({day_sign}{p['day_pnl_pct']:.2f}%)", style={"color": day_color}), style=cell_r),
-            html.Td(html.Span(f"{total_sign}{p['total_pnl_pct']:.1f}%", style={"color": total_color}), style=cell_r),
-            html.Td(_weight_bar(p["weight"]), style=cell_r),
-        ]))
+            html.Td(shares_str, style=cell_r if shares else dash_style),
+            html.Td(avg_cost_str, style=cell_r if avg_cost else dash_style),
+            html.Td(current_price_str, style=cell_r if current_price else dash_style),
+            html.Td(market_value_str, style=cell_r),
+        ]
+
+        if show_pnl:
+            day_pnl = p.get("day_pnl", 0)
+            day_pnl_pct = p.get("day_pnl_pct", 0)
+            total_pnl_pct = p.get("total_pnl_pct", 0)
+            day_color = COLORS["green"] if day_pnl >= 0 else COLORS["red"]
+            total_color = COLORS["green"] if total_pnl_pct >= 0 else COLORS["red"]
+            day_sign = "+" if day_pnl >= 0 else ""
+            total_sign = "+" if total_pnl_pct >= 0 else ""
+            day_pnl_str = f"{day_sign}{mask_number(abs(day_pnl), masked=masked)}" if masked else f"{day_sign}${abs(day_pnl):,.0f}"
+            day_pnl_pct_str = mask_pct(abs(day_pnl_pct), masked=masked) if masked else f"{day_sign}{day_pnl_pct:.2f}%"
+            total_pnl_pct_str = mask_pct(abs(total_pnl_pct), masked=masked) if masked else f"{total_sign}{total_pnl_pct:.1f}%"
+            row_cells += [
+                html.Td(html.Span(f"{day_pnl_str} ({day_pnl_pct_str})", style={"color": day_color}), style=cell_r),
+                html.Td(html.Span(total_pnl_pct_str, style={"color": total_color}), style=cell_r),
+            ]
+
+        row_cells.append(html.Td(_weight_bar(p["weight"]), style=cell_r))
+        table_rows.append(html.Tr(row_cells))
 
     return html.Div(
         html.Table([html.Thead(headers), html.Tbody(table_rows)],
@@ -133,44 +284,138 @@ def _positions_table(rows_data: list[dict]) -> html.Div:
     )
 
 
+def _account_section(name: str, account_type: str | None, total_value: float,
+                     rows_data: list[dict], masked: bool, show_pnl: bool) -> html.Div:
+    """A labelled section header + positions table for a single account."""
+    label = name
+    if account_type:
+        label += f" ({account_type.upper()})"
+    value_str = mask_number(total_value, masked=masked)
+    return html.Div([
+        html.Div([
+            html.Span(label, style={"fontWeight": "600", "fontSize": "15px", "color": COLORS["text_primary"]}),
+            html.Span(value_str, style={"fontWeight": "600", "fontSize": "15px", "color": COLORS["text_secondary"], "fontFamily": MONO}),
+        ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
+                  "marginBottom": "12px", "marginTop": "24px"}),
+        _positions_table(rows_data, masked=masked, show_pnl=show_pnl),
+    ])
+
+
 # ── Public layout ──────────────────────────────────────────────────────────
 
-def portfolio_layout() -> html.Div:
+def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart_period: str = "1Y") -> html.Div:
     """Return the portfolio page, using live Schwab data when available."""
-    summary: AccountSummary | None = get_account_summary()
-    is_live = summary is not None and summary.total_value > 0
+    schwab_summaries: list[AccountSummary] = get_all_account_summaries()
+    schwab_live = bool(schwab_summaries) and any(s.total_value > 0 for s in schwab_summaries)
 
-    if is_live:
-        assert summary is not None
-        rows_data = [
+    # ── Collect all named accounts (for dropdown) ──────────────────────────
+    all_account_names: list[str] = []
+
+    # ── Calculate full portfolio total FIRST (before filtering) ─────────────
+    # This is used to weight positions relative to the entire portfolio
+    full_portfolio_total = 0.0
+    if schwab_live:
+        full_portfolio_total += sum(s.total_value for s in schwab_summaries)
+    for ext in list_accounts():
+        full_portfolio_total += ext["total_value"]
+
+    # ── Build per-account data ─────────────────────────────────────────────
+    # Each entry: (name, account_type, total_value, cash, day_pnl, rows, show_pnl)
+    AccountEntry = tuple  # (name, acct_type, total, cash, day_pnl, rows, show_pnl)
+    entries: list[AccountEntry] = []
+
+    if schwab_live:
+        for s in schwab_summaries:
+            label = f"Schwab ···{s.account_number[-4:]}" if s.account_number else "Schwab"
+            all_account_names.append(label)
+            rows = [
+                {
+                    "ticker": p.ticker,
+                    "name": p.company_name,
+                    "shares": p.shares,
+                    "avg_cost": p.avg_cost,
+                    "current_price": p.current_price,
+                    "market_value": p.market_value,
+                    "day_pnl": p.day_pnl,
+                    "day_pnl_pct": p.day_pnl_pct,
+                    "total_pnl": p.total_pnl,
+                    "total_pnl_pct": p.total_pnl_pct,
+                    "weight": (p.market_value / full_portfolio_total * 100) if full_portfolio_total else 0.0,
+                }
+                for p in s.positions
+            ]
+            entries.append((label, "brokerage", s.total_value, s.cash_balance, s.day_pnl, rows, True))
+
+    for ext in list_accounts():
+        positions = get_positions(ext["name"])
+        acct_total = ext["total_value"]
+        all_account_names.append(ext["name"])
+        rows = [
             {
                 "ticker": p.ticker,
-                "name": p.company_name,
+                "name": p.company_name or p.ticker,
                 "shares": p.shares,
                 "avg_cost": p.avg_cost,
                 "current_price": p.current_price,
-                "market_value": p.market_value,
-                "day_pnl": p.day_pnl,
-                "day_pnl_pct": p.day_pnl_pct,
-                "total_pnl": p.total_pnl,
-                "total_pnl_pct": p.total_pnl_pct,
-                "weight": p.weight,
+                "market_value": p.market_value or 0.0,
+                "weight": (p.market_value / full_portfolio_total * 100) if full_portfolio_total and p.market_value else 0.0,
             }
-            for p in summary.positions
+            for p in sorted(positions, key=lambda x: x.market_value or 0, reverse=True)
         ]
-        total_value = summary.total_value
-        cash_balance = summary.cash_balance
-        day_pnl = summary.day_pnl
-    else:
-        rows_data = _SAMPLE_POSITIONS
-        sample = _sample_account()
-        total_value = sample["total_value"]
-        cash_balance = sample["cash_balance"]
-        day_pnl = sample["day_pnl"]
+        entries.append((ext["name"], ext["account_type"], acct_total, 0.0, 0.0, rows, False))
 
-    day_pnl_sign = "+" if day_pnl >= 0 else ""
-    day_pnl_color = COLORS["green"] if day_pnl >= 0 else COLORS["red"]
-    n_positions = len(rows_data)
+    # ── Apply account filter ───────────────────────────────────────────────
+    if filter_account and filter_account != "__all__":
+        entries = [e for e in entries if e[0] == filter_account]
+
+    # ── Aggregate summary metrics ──────────────────────────────────────────
+    grand_total = sum(e[2] for e in entries)
+    grand_cash = sum(e[3] for e in entries)
+    grand_day_pnl = sum(e[4] for e in entries)
+    total_positions = sum(len(e[5]) for e in entries)
+
+    account_sections: list[html.Div] = [
+        _account_section(name, atype, total, rows, masked, show_pnl)
+        for name, atype, total, _cash, _dpnl, rows, show_pnl in entries
+    ]
+
+    is_live = schwab_live or bool(all_account_names)
+
+    if not is_live:
+        # Sample fallback
+        sample = _sample_account()
+        grand_total = sample["total_value"]
+        grand_cash = sample["cash_balance"]
+        grand_day_pnl = sample["day_pnl"]
+        total_positions = len(_SAMPLE_POSITIONS)
+        account_sections = [_account_section("Sample Portfolio", None, grand_total, _SAMPLE_POSITIONS, masked, show_pnl=True)]
+
+    n_accounts = len(account_sections)
+
+    # ── Summary metrics ────────────────────────────────────────────────────
+    day_pnl_sign = "+" if grand_day_pnl >= 0 else ""
+    day_pnl_color = COLORS["green"] if grand_day_pnl >= 0 else COLORS["red"]
+
+    alpha_data = calculate_alpha()
+    hist_result = get_historical_returns(days=365)
+    has_history = hist_result is not None and len(hist_result[2]) >= 2
+
+    alpha_str, alpha_desc, alpha_color = "—", "Insufficient data", COLORS["text_tertiary"]
+    if alpha_data is not None:
+        av = alpha_data["alpha_pct"]
+        alpha_str = f"{'+'if av>=0 else ''}{av}%"
+        alpha_desc = f"vs S&P 500 ({alpha_data['days_tracked']} days)"
+        alpha_color = COLORS["green"] if av >= 0 else COLORS["red"]
+
+    chart_subtitle = f"Real data ({len(hist_result[2])} trading days)" if has_history else "Simulated — enable daily snapshots for real data"
+
+    portfolio_value_str = mask_number(grand_total, masked=masked)
+    cash_balance_str = mask_number(grand_cash, masked=masked)
+    day_pnl_str = f"{day_pnl_sign}{mask_number(abs(grand_day_pnl), masked=masked)}" if masked else f"{day_pnl_sign}${abs(grand_day_pnl):,.0f}"
+    if grand_total:
+        day_pnl_pct_str = mask_pct(abs(grand_day_pnl) / grand_total * 100, masked=masked) if masked else f"{day_pnl_sign}{abs(grand_day_pnl) / grand_total * 100:.2f}%"
+    else:
+        day_pnl_pct_str = "—"
 
     data_badge = html.Span(
         "● LIVE" if is_live else "● SAMPLE DATA",
@@ -183,77 +428,84 @@ def portfolio_layout() -> html.Div:
         },
     )
 
+    # ── Account filter dropdown ────────────────────────────────────────────
+    dropdown_options = [{"label": "All Accounts", "value": "__all__"}] + [
+        {"label": name, "value": name} for name in all_account_names
+    ]
+    filter_bar = html.Div([
+        html.Div([
+            data_badge,
+            dcc.Dropdown(
+                id="account-filter-dropdown",
+                options=dropdown_options,
+                value=filter_account,
+                clearable=False,
+                className="dark-dropdown",
+                style={"width": "260px", "fontSize": "13px"},
+            ),
+        ], style={"display": "flex", "alignItems": "center", "gap": "16px"}),
+    ], style={"marginBottom": "20px"})
+
     return html.Div([
-        # Status badge row
-        html.Div([data_badge], style={"marginBottom": "20px"}),
+        # Status badge + account filter
+        filter_bar,
 
         # KPI strip
         html.Div(
             [
-                kpi_card("Portfolio Value", f"${total_value:,.0f}", f"Cash: ${cash_balance:,.0f}", COLORS["text_secondary"]),
-                kpi_card("Today's P&L", f"{day_pnl_sign}${abs(day_pnl):,.0f}", f"{day_pnl_sign}{abs(day_pnl) / total_value * 100:.2f}% of portfolio" if total_value else "", day_pnl_color),
-                kpi_card("Positions", str(n_positions), f"{n_positions} equity / cash: ${cash_balance:,.0f}", COLORS["text_secondary"]),
-                kpi_card("Alpha vs S&P", "—", "Enable market data for benchmark", COLORS["text_tertiary"]),
+                kpi_card("Total Portfolio", portfolio_value_str, f"{n_accounts} account{'s' if n_accounts != 1 else ''}", COLORS["text_secondary"]),
+                kpi_card("Today's P&L", day_pnl_str, f"{day_pnl_pct_str} of portfolio" if grand_total else "", day_pnl_color),
+                kpi_card("Positions", str(total_positions), f"Cash: {cash_balance_str}", COLORS["text_secondary"]),
+                kpi_card("Alpha vs S&P", alpha_str, alpha_desc, alpha_color),
             ],
             style={"display": "grid", "gridTemplateColumns": "repeat(auto-fit, minmax(220px, 1fr))", "gap": "16px", "marginBottom": "28px"},
         ),
 
-        # Chart (simulated until daily snapshots are implemented)
+        # Chart
         html.Div([
             html.Div([
                 section_header("Performance", "1Y total return vs S&P 500"),
-                html.Span("Simulated — historical snapshots not yet tracked", style={
-                    "fontSize": "11px", "color": COLORS["text_tertiary"], "fontStyle": "italic",
-                }),
+                html.Span(chart_subtitle, style={"fontSize": "11px", "color": COLORS["text_tertiary"], "fontStyle": "italic"}),
             ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "marginBottom": "16px"}),
             html.Div(
-                _build_chart(total_value),
+                _build_chart(grand_total, masked=masked, period=chart_period, filter_account=filter_account),
                 style={"background": COLORS["surface"], "border": f"1px solid {COLORS['border']}", "borderRadius": "16px", "padding": "20px"},
             ),
         ], style={"marginBottom": "28px"}),
 
-        # Positions table
-        section_header("Positions", "sorted by market value"),
-        _positions_table(rows_data),
+        # Per-account positions
+        section_header("Positions", "by account — external accounts show last imported balance"),
+        *account_sections,
 
-        # Rebalance section
-        html.Div(
-            [
-                html.Hr(style={"border": "none", "borderTop": f"1px solid {COLORS['border']}", "margin": "28px 0 24px 0"}),
-                html.Div(
-                    [
-                        section_header("Rebalance", "equal-weight target, capped at your max position size"),
-                        html.Button(
-                            "Suggest Rebalance",
-                            id="portfolio-rebalance-btn",
-                            n_clicks=0,
-                            style={
-                                "padding": "10px 24px",
-                                "fontSize": "13px",
-                                "fontWeight": "600",
-                                "color": COLORS["text_primary"],
-                                "background": COLORS["accent"],
-                                "border": "none",
-                                "borderRadius": "10px",
-                                "cursor": "pointer" if is_live else "not-allowed",
-                                "opacity": "1" if is_live else "0.4",
-                            },
-                            disabled=not is_live,
-                        ),
-                    ],
-                    style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "16px"},
+        # Rebalance section (Schwab only)
+        html.Div([
+            html.Hr(style={"border": "none", "borderTop": f"1px solid {COLORS['border']}", "margin": "28px 0 24px 0"}),
+            html.Div([
+                section_header("Rebalance", "signal-driven allocation based on momentum, sentiment, and volatility"),
+                html.Button(
+                    "Suggest Rebalance",
+                    id="portfolio-rebalance-btn",
+                    n_clicks=0,
+                    style={
+                        "padding": "10px 24px", "fontSize": "13px", "fontWeight": "600",
+                        "color": COLORS["text_primary"], "background": COLORS["accent"],
+                        "border": "none", "borderRadius": "10px",
+                        "cursor": "pointer" if schwab_live else "not-allowed",
+                        "opacity": "1" if schwab_live else "0.4",
+                    },
+                    disabled=not schwab_live,
                 ),
-                html.Div(
-                    "Connect Schwab to enable rebalancing." if not is_live else "",
-                    id="portfolio-rebalance-panel",
-                    style={"fontSize": "13px", "color": COLORS["text_tertiary"], "fontStyle": "italic"},
-                ),
-            ],
-        ),
+            ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center", "marginBottom": "16px"}),
+            html.Div(
+                "Connect Schwab to enable rebalancing." if not schwab_live else "",
+                id="portfolio-rebalance-panel",
+                style={"fontSize": "13px", "color": COLORS["text_tertiary"], "fontStyle": "italic"},
+            ),
+        ]),
 
         # Footer
         html.Div(
-            "Sample data shown — connect Schwab and refresh" if not is_live else f"Live data from account ···{summary.account_number[-4:] if summary and summary.account_number else ''}",  # type: ignore[union-attr]
+            "Sample data shown — connect Schwab and refresh" if not is_live else f"Live data · {n_accounts} account{'s' if n_accounts != 1 else ''} loaded",
             style={"fontSize": "12px", "color": COLORS["text_tertiary"], "textAlign": "center", "marginTop": "24px", "fontStyle": "italic"},
         ),
     ])

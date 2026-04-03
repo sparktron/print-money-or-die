@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Callable
 
 import structlog
 
@@ -122,7 +123,10 @@ def _build_reason(
     return f"{ticker}: " + ", ".join(parts) + "." if parts else f"{ticker}: general candidate."
 
 
-def rank_candidates(max_results: int = 20) -> list[ScoredCandidate]:
+def rank_candidates(
+    max_results: int = 20,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> list[ScoredCandidate]:
     """Score and rank all candidate tickers based on user preferences.
 
     Pulls politician signals + technical momentum, weights them by
@@ -147,11 +151,13 @@ def rank_candidates(max_results: int = 20) -> list[ScoredCandidate]:
                 "confidence": sig.confidence,
                 "company_name": sig.company_name or sig.ticker,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("screener_pol_data_load_error", error=str(exc)[:80])
 
     scored: list[ScoredCandidate] = []
-    for ticker in candidates:
+    for i, ticker in enumerate(candidates):
+        if on_progress is not None:
+            on_progress(i + 1, len(candidates), ticker)
         # Technical momentum (try to get it, fall back to 0)
         momentum = 0.0
         try:
@@ -183,12 +189,15 @@ def rank_candidates(max_results: int = 20) -> list[ScoredCandidate]:
     return scored[:max_results]
 
 
-def screen_and_update_watchlist(max_items: int = 15) -> int:
+def screen_and_update_watchlist(
+    max_items: int = 15,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> int:
     """Run the full screening pipeline and persist results to WatchlistItem.
 
     Returns the number of tickers added or updated.
     """
-    candidates = rank_candidates(max_results=max_items)
+    candidates = rank_candidates(max_results=max_items, on_progress=on_progress)
     if not candidates:
         return 0
 

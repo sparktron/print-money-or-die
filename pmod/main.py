@@ -146,8 +146,10 @@ def portfolio() -> None:
 def portfolio_status() -> None:
     """Show current portfolio positions and balances."""
     from pmod.broker.schwab import get_account_summary
+    from pmod.utils.spinner import spinning
 
-    summary = get_account_summary()
+    with spinning("Fetching account data…", timeout_s=20):
+        summary = get_account_summary()
     if summary is None:
         click.echo("Could not retrieve account — run `pmod auth login` first.")
         return
@@ -178,65 +180,126 @@ def portfolio_status() -> None:
     click.echo()
 
 
+@portfolio.command("backfill")
+@click.option("--days", default=365, show_default=True, help="Calendar days of history to backfill.")
+def portfolio_backfill(days: int) -> None:
+    """Backfill historical portfolio and benchmark snapshots from Polygon price data.
+
+    Uses your current share counts to reconstruct daily portfolio values.
+    This is an approximation — it assumes you held the same positions
+    throughout the window.  Safe to re-run; existing dates are skipped.
+    """
+    from pmod.analytics.backfill import backfill_portfolio_history
+    from pmod.utils.spinner import Spinner
+
+    click.echo(f"\n  Backfilling {days} days of history…")
+    click.echo("  (Polygon free tier: ~5 req/min — this may take a few minutes)\n")
+
+    sp = Spinner("Fetching price data…", timeout_s=600).start()
+
+    def _progress(msg: str) -> None:
+        sp.beat(msg)
+
+    result = backfill_portfolio_history(days=days, on_progress=_progress)
+    sp.stop()
+
+    if result["new_portfolio"] == 0 and result["new_benchmark"] == 0:
+        click.echo("  Nothing new to add — all dates already have snapshots.\n")
+    else:
+        click.echo(f"  Portfolio snapshots added : {result['new_portfolio']}")
+        click.echo(f"  Benchmark snapshots added : {result['new_benchmark']}")
+
+    if result["skipped_tickers"]:
+        click.echo(f"  Skipped (no Polygon data) : {', '.join(result['skipped_tickers'])}")
+    click.echo()
+
+
 @portfolio.command("rebalance")
 @click.option("--dry-run", is_flag=True, help="Preview rebalance without executing.")
 def portfolio_rebalance(dry_run: bool) -> None:
-    """Rebalance the portfolio using equal-weight optimization."""
+    """Rebalance the entire portfolio (all accounts) using equal-weight optimization."""
     from pmod.optimizer.portfolio import compute_rebalance
     from pmod.preferences.profile import load_preferences_dict
 
     prefs = load_preferences_dict()
     max_pos = float(prefs.get("max_position_pct", 5.0))
 
-    click.echo(f"\n  Computing rebalance (max position: {max_pos}%)…\n")
-    plan = compute_rebalance(max_position_pct=max_pos)
+    click.echo(f"\n  Computing holistic portfolio rebalance (max position: {max_pos}%)…")
+    from pmod.utils.spinner import spinning
+    with spinning("Fetching positions from all accounts…", timeout_s=20):
+        holistic_plan = compute_rebalance(max_position_pct=max_pos)
+    click.echo()
 
-    if not plan.trades:
-        click.echo("  No rebalance data — connect Schwab first.")
+    if not holistic_plan.account_rebalances or all(not ar.trades for ar in holistic_plan.account_rebalances):
+        click.echo("  No rebalance data — add accounts with positions first.")
         return
 
-    click.echo(f"  {'Ticker':<8} {'Action':<6} {'Shares Δ':>10} {'$ Δ':>12}  {'Cur %':>7}  {'Tgt %':>7}")
-    click.echo("  " + "-" * 58)
-    for t in sorted(plan.trades, key=lambda x: abs(x.dollar_delta), reverse=True):
-        sign = "+" if t.shares_delta >= 0 else ""
-        dsign = "+" if t.dollar_delta >= 0 else ""
-        click.echo(
-            f"  {t.ticker:<8} {t.action:<6} {sign}{t.shares_delta:>9}  {dsign}${abs(t.dollar_delta):>10,.0f}"
-            f"  {t.current_weight_pct:>6.1f}%  {t.target_weight_pct:>6.1f}%"
-        )
+    # Print per-account recommendations
+    total_actionable = 0
+    for acct_rebalance in holistic_plan.account_rebalances:
+        if not acct_rebalance.trades:
+            continue
 
-    cash_sign = "+" if plan.net_cash_change >= 0 else ""
-    click.echo(f"\n  Net cash impact: {cash_sign}${plan.net_cash_change:,.0f}")
-    click.echo(f"  Cash available:  ${plan.cash_available:,.0f}\n")
+        click.echo(f"\n  {acct_rebalance.account_name.upper()}")
+        click.echo(f"  {'Ticker':<8} {'Action':<6} {'Shares Δ':>10} {'$ Δ':>12}  {'Cur %':>7}  {'Tgt %':>7}")
+        click.echo("  " + "-" * 58)
+
+        for t in sorted(acct_rebalance.trades, key=lambda x: abs(x.dollar_delta), reverse=True):
+            sign = "+" if t.shares_delta >= 0 else ""
+            dsign = "+" if t.dollar_delta >= 0 else ""
+            click.echo(
+                f"  {t.ticker:<8} {t.action:<6} {sign}{t.shares_delta:>9}  {dsign}${abs(t.dollar_delta):>10,.0f}"
+                f"  {t.current_weight_pct:>6.1f}%  {t.target_weight_pct:>6.1f}%"
+            )
+
+        actionable = [t for t in acct_rebalance.trades if t.action != "hold"]
+        total_actionable += len(actionable)
+        cash_sign = "+" if acct_rebalance.net_cash_change >= 0 else ""
+        click.echo(f"  Account net cash: {cash_sign}${acct_rebalance.net_cash_change:,.0f}")
+
+    # Portfolio summary
+    click.echo(f"\n  PORTFOLIO SUMMARY")
+    click.echo(f"  Total value:         ${holistic_plan.portfolio_total_value:,.0f}")
+    cash_sign = "+" if holistic_plan.portfolio_net_cash_change >= 0 else ""
+    click.echo(f"  Portfolio net cash:  {cash_sign}${holistic_plan.portfolio_net_cash_change:,.0f}")
+    click.echo(f"  Total trades needed: {total_actionable}\n")
 
     if dry_run:
         click.echo("  Dry run — no trades placed.\n")
         return
 
-    actionable = [t for t in plan.trades if t.action != "hold"]
-    if not actionable:
+    if total_actionable == 0:
         click.echo("  Portfolio is already balanced.\n")
         return
 
-    if not click.confirm(f"  Execute {len(actionable)} trade(s)? This will place real orders."):
+    if not click.confirm(f"  Execute {total_actionable} trade(s) across all accounts? This will place real orders."):
         click.echo("  Aborted.\n")
         return
 
     from pmod.broker.schwab import OrderRequest, place_order
 
-    for t in actionable:
-        if t.shares_delta == 0:
+    # Execute only Schwab trades (Schwab is the only account with order execution capability)
+    for acct_rebalance in holistic_plan.account_rebalances:
+        if "Schwab" not in acct_rebalance.account_name:
+            if any(t.action != "hold" for t in acct_rebalance.trades):
+                click.echo(f"\n  Note: {acct_rebalance.account_name} is external and requires manual rebalancing.")
+                for t in [t for t in acct_rebalance.trades if t.action != "hold"]:
+                    click.echo(f"       {t.action.upper()} {abs(t.shares_delta)} {t.ticker}")
             continue
-        req = OrderRequest(
-            ticker=t.ticker,
-            instruction=t.action,
-            quantity=abs(t.shares_delta),
-            order_type="market",
-        )
-        result = place_order(req)
-        status = "OK" if result.success else "FAIL"
-        sign = "+" if t.shares_delta > 0 else ""
-        click.echo(f"  [{status}] {t.action.upper()} {abs(t.shares_delta)} {t.ticker} — {result.message}")
+
+        for t in acct_rebalance.trades:
+            if t.action == "hold" or t.shares_delta == 0:
+                continue
+            req = OrderRequest(
+                ticker=t.ticker,
+                instruction=t.action,
+                quantity=abs(t.shares_delta),
+                order_type="market",
+            )
+            result = place_order(req)
+            status = "OK" if result.success else "FAIL"
+            sign = "+" if t.shares_delta > 0 else ""
+            click.echo(f"  [{status}] {t.action.upper()} {abs(t.shares_delta)} {t.ticker} — {result.message}")
 
     click.echo()
 
@@ -251,15 +314,23 @@ def research_run() -> None:
     """Run a full research pass: politician signals → screener → watchlist."""
     from pmod.research.politician_signals import generate_signals
     from pmod.research.screener import screen_and_update_watchlist
+    from pmod.utils.spinner import Spinner
 
     click.echo("\n  Generating politician trade signals…")
-    signals = generate_signals()
+    with Spinner("Generating politician trade signals…", timeout_s=30):
+        signals = generate_signals()
     strong = sum(1 for s in signals if s.signal == "strong_buy")
     buys = sum(1 for s in signals if s.signal == "buy")
     click.echo(f"    {len(signals)} signals ({strong} strong buy, {buys} buy)")
 
     click.echo("  Running screener and updating watchlist…")
-    count = screen_and_update_watchlist()
+    sp = Spinner("Scoring tickers…", timeout_s=30).start()
+
+    def _on_ticker(i: int, total: int, ticker: str) -> None:
+        sp.beat(f"Scoring {ticker}  [{i}/{total}]")
+
+    count = screen_and_update_watchlist(on_progress=_on_ticker)
+    sp.stop()
     click.echo(f"    {count} tickers added/updated on watchlist")
     click.echo("  Done.\n")
 
@@ -274,9 +345,12 @@ def politicians_fetch() -> None:
     """Fetch the latest congressional trade disclosures and store them."""
     from pmod.data.politician_trades import fetch_and_store_trades
 
+    from pmod.utils.spinner import spinning
+
     click.echo("Fetching Senate PTR disclosures from efdsearch.senate.gov…")
     click.echo("(House PTR data not yet available — individual filings are PDFs only)")
-    counts = fetch_and_store_trades()
+    with spinning("Fetching disclosures…", timeout_s=30):
+        counts = fetch_and_store_trades()
     click.echo(
         f"Done — Senate: {counts['senate']}, Skipped: {counts['errors']}"
     )
@@ -289,8 +363,11 @@ def politicians_signals(days: int, min_trades: int) -> None:
     """Generate buy/sell signals from congressional trade data."""
     from pmod.research.politician_signals import generate_signals
 
+    from pmod.utils.spinner import spinning
+
     click.echo(f"Generating signals from last {days} days of disclosures…")
-    signals = generate_signals(window_days=days, min_trades=min_trades)
+    with spinning("Generating signals…", timeout_s=30):
+        signals = generate_signals(window_days=days, min_trades=min_trades)
     if not signals:
         click.echo("No signals generated — run `pmod politicians fetch` first.")
         return
@@ -337,6 +414,134 @@ def politicians_list(ticker: str | None, days: int, limit: int) -> None:
         click.echo(
             f"{date_str:<12} {t.politician_name[:34]:<35} {t.ticker:<8} {t.trade_type:<10} {amount}"
         )
+
+
+@cli.group()
+def external() -> None:
+    """Manually-tracked external accounts (CSV import)."""
+
+
+@external.command("import")
+@click.argument("csv_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--account", "-a", required=True, help="Account name (e.g. 'Start Right Online').")
+@click.option("--account-type", "-t", default=None, help="Optional type label, e.g. '529', 'IRA'.")
+@click.option("--dry-run", is_flag=True, help="Preview parsed rows without writing to DB.")
+def external_import(csv_file: str, account: str, account_type: str | None, dry_run: bool) -> None:
+    """Import positions from CSV_FILE into an external account."""
+    from pmod.data.external_accounts import import_positions, parse_csv
+
+    try:
+        rows = parse_csv(csv_file)
+    except Exception as exc:
+        click.echo(f"  Error reading CSV: {exc}")
+        raise SystemExit(1)
+
+    if not rows:
+        click.echo("  No valid position rows found in CSV. Check column headers.")
+        return
+
+    click.echo(f"\n  Account : {account}" + (f" ({account_type})" if account_type else ""))
+    click.echo(f"  Source  : {csv_file}")
+    click.echo(f"  Rows    : {len(rows)}\n")
+
+    click.echo(f"  {'Ticker':<10} {'Company':<30} {'Shares':>10} {'Price':>10} {'Mkt Value':>12}")
+    click.echo("  " + "-" * 76)
+    for r in rows:
+        shares_str = f"{r.shares:,.4f}".rstrip("0").rstrip(".") if r.shares is not None else "—"
+        price_str = f"${r.current_price:,.4f}" if r.current_price is not None else "—"
+        mv_str = f"${r.market_value:,.2f}" if r.market_value is not None else "—"
+        name = (r.company_name or "")[:29]
+        click.echo(f"  {r.ticker:<10} {name:<30} {shares_str:>10} {price_str:>10} {mv_str:>12}")
+    click.echo()
+
+    if dry_run:
+        click.echo("  Dry run — nothing written.\n")
+        return
+
+    if not click.confirm(f"  Save {len(rows)} positions for '{account}'?"):
+        click.echo("  Aborted.\n")
+        return
+
+    count = import_positions(account, rows, account_type=account_type)
+    click.echo(f"  Saved {count} positions for '{account}'.\n")
+
+
+@external.command("list")
+def external_list() -> None:
+    """List all external accounts with position counts and total values."""
+    from pmod.data.external_accounts import list_accounts
+
+    accounts = list_accounts()
+    if not accounts:
+        click.echo("  No external accounts. Use `pmod external import` to add one.")
+        return
+
+    click.echo(f"\n  {'Account':<30} {'Type':<10} {'Positions':>10} {'Total Value':>14}  Last Import")
+    click.echo("  " + "-" * 80)
+    for a in accounts:
+        last = a["last_imported_at"].strftime("%Y-%m-%d") if a["last_imported_at"] else "never"
+        acct_type = a["account_type"] or "—"
+        click.echo(
+            f"  {a['name']:<30} {acct_type:<10} {a['position_count']:>10} "
+            f"${a['total_value']:>13,.2f}  {last}"
+        )
+    click.echo()
+
+
+@external.command("show")
+@click.argument("account")
+def external_show(account: str) -> None:
+    """Show all positions for ACCOUNT."""
+    from pmod.data.external_accounts import get_positions
+
+    positions = get_positions(account)
+    if not positions:
+        click.echo(f"  No positions found for '{account}'. Check the account name or run import first.")
+        return
+
+    total = sum(p.market_value or 0 for p in positions)
+    click.echo(f"\n  {account}\n")
+    click.echo(f"  {'Ticker':<10} {'Company':<32} {'Shares':>10} {'Price':>10} {'Mkt Value':>12}")
+    click.echo("  " + "-" * 78)
+    for p in sorted(positions, key=lambda x: x.market_value or 0, reverse=True):
+        shares_str = f"{p.shares:,.4f}".rstrip("0").rstrip(".") if p.shares is not None else "—"
+        price_str = f"${p.current_price:,.4f}" if p.current_price is not None else "—"
+        mv_str = f"${p.market_value:,.2f}" if p.market_value is not None else "—"
+        name = (p.company_name or "")[:31]
+        click.echo(f"  {p.ticker:<10} {name:<32} {shares_str:>10} {price_str:>10} {mv_str:>12}")
+    click.echo(f"\n  {'Total':<53} ${total:>12,.2f}\n")
+
+
+@external.command("clear")
+@click.argument("account")
+def external_clear(account: str) -> None:
+    """Delete all positions and the record for ACCOUNT."""
+    from pmod.data.external_accounts import clear_account
+
+    if not click.confirm(f"  Delete all data for '{account}'? This cannot be undone."):
+        click.echo("  Aborted.")
+        return
+    found = clear_account(account)
+    if found:
+        click.echo(f"  Cleared '{account}'.")
+    else:
+        click.echo(f"  Account '{account}' not found.")
+
+
+@external.command("update")
+def external_update() -> None:
+    """Update external account positions with current market prices.
+
+    Reads share counts from external_positions_config.csv, fetches current
+    prices from Polygon.io, and stores daily snapshots.
+    """
+    from pmod.analytics.external_updates import update_external_account_daily_values
+    from pmod.utils.spinner import spinning
+
+    click.echo("\n  Updating external account positions with current market prices…")
+    with spinning("Fetching prices and updating daily values…", timeout_s=60):
+        update_external_account_daily_values()
+    click.echo("  Done.\n")
 
 
 if __name__ == "__main__":

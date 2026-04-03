@@ -1,5 +1,7 @@
 """Reusable Dash/Plotly components — design system tokens and shared elements."""
 
+import os
+
 from dash import html
 
 # ── Design Tokens ──────────────────────────────────────────────────────────
@@ -33,6 +35,44 @@ FONT = (
 )
 
 MONO = "'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace"
+
+# ── Dev mode masking ──────────────────────────────────────────────────────
+_DEV_MODE = os.getenv("PMOD_DEV_MASK", "true").lower() in ("true", "1", "yes")
+
+
+def mask_number(value: float, show_last_n: int = 3, masked: bool | None = None) -> str:
+    """Mask a number with asterisks, showing only the last N digits.
+
+    Pass masked=True/False to override the env-var default.
+    Example: 12345.67 → $***567 (shows last 3 digits)
+    """
+    should_mask = _DEV_MODE if masked is None else masked
+    if not should_mask:
+        return f"${value:,.2f}" if isinstance(value, (int, float)) else str(value)
+
+    int_value = int(value)
+    int_str = str(int_value)
+    visible_digits = int_str[-show_last_n:] if len(int_str) > show_last_n else int_str
+    hidden_count = max(0, len(int_str) - show_last_n)
+    return "$" + "*" * hidden_count + visible_digits
+
+
+def mask_pct(value: float, masked: bool | None = None) -> str:
+    """Mask a percentage with asterisks, showing only the last 2 digits + % sign.
+
+    Pass masked=True/False to override the env-var default.
+    Example: 45.67% → ***67%
+    """
+    should_mask = _DEV_MODE if masked is None else masked
+    if not should_mask:
+        return f"{value:.2f}%"
+
+    formatted = f"{value:.2f}"
+    digits_only = formatted.replace(",", "")
+    visible_chars = digits_only[-2:] if len(digits_only) > 2 else digits_only
+    hidden_count = max(0, len(digits_only) - 2)
+    return "*" * hidden_count + visible_chars + "%"
+
 
 # ── Plotly layout template ────────────────────────────────────────────────
 CHART_LAYOUT = dict(

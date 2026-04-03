@@ -10,6 +10,13 @@ from pmod.config import get_settings
 
 log = structlog.get_logger()
 
+_cached_client: Client | None = None
+
+
+def _invalidate_client_cache() -> None:
+    global _cached_client
+    _cached_client = None
+
 
 def run_oauth_flow() -> Client:
     """Run the interactive browser-based OAuth2 login.
@@ -28,6 +35,7 @@ def run_oauth_flow() -> Client:
         sys.exit(1)
 
     log.info("starting Schwab OAuth2 login flow")
+    _invalidate_client_cache()
     client = client_from_login_flow(
         api_key=settings.schwab_app_key,
         app_secret=settings.schwab_app_secret,
@@ -78,16 +86,27 @@ def auth_status() -> dict:
 
 
 def get_client() -> Client:
-    """Return an authenticated Schwab client, using cached tokens when available."""
+    """Return an authenticated Schwab client, using a cached in-process instance when available.
+
+    schwab-py manages access-token refresh internally on every API call, so the same
+    Client object can be reused for the lifetime of the process without re-reading
+    the token file on each request.
+    """
+    global _cached_client
+
+    if _cached_client is not None:
+        return _cached_client
+
     settings = get_settings()
 
     if settings.schwab_token_path.exists():
         log.info("loading cached Schwab token", path=str(settings.schwab_token_path))
-        return client_from_token_file(
+        _cached_client = client_from_token_file(
             token_path=str(settings.schwab_token_path),
             api_key=settings.schwab_app_key,
             app_secret=settings.schwab_app_secret,
         )
+        return _cached_client
 
     log.warning("no cached token found, starting login flow")
     return run_oauth_flow()

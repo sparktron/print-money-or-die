@@ -84,6 +84,48 @@ class PoliticianTrade(Base):
     fetched_at = Column(DateTime, server_default=func.now())
 
 
+class ExternalAccount(Base):
+    """A manually-tracked external account (e.g. 529, IRA at another custodian)."""
+
+    __tablename__ = "external_accounts"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    name: str = Column(String(200), nullable=False, unique=True)  # type: ignore[assignment]
+    account_type: str = Column(String(50), nullable=True)  # type: ignore[assignment]  e.g. "529", "IRA"
+    last_imported_at = Column(DateTime, nullable=True)
+
+
+class ExternalPosition(Base):
+    """A position inside an external account, populated from a CSV import."""
+
+    __tablename__ = "external_positions"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    account_id: int = Column(Integer, nullable=False, index=True)  # type: ignore[assignment]
+    ticker: str = Column(String(20), nullable=False)  # type: ignore[assignment]
+    company_name: str = Column(String(300), nullable=True)  # type: ignore[assignment]
+    shares: float = Column(Float, nullable=True)  # type: ignore[assignment]
+    avg_cost: float = Column(Float, nullable=True)  # type: ignore[assignment]
+    current_price: float = Column(Float, nullable=True)  # type: ignore[assignment]
+    market_value: float = Column(Float, nullable=True)  # type: ignore[assignment]
+    imported_at = Column(DateTime, server_default=func.now())
+
+
+class AccountDailyValue(Base):
+    """Daily total value for a single named account (Schwab or external).
+
+    Populated by ``pmod portfolio backfill``.  Used for per-account
+    performance charts without requiring live API calls on every render.
+    """
+
+    __tablename__ = "account_daily_values"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    account_name: str = Column(String(200), nullable=False, index=True)  # type: ignore[assignment]
+    total_value: float = Column(Float, nullable=False)  # type: ignore[assignment]
+    captured_at = Column(DateTime, nullable=False, index=True)
+
+
 class PortfolioSnapshot(Base):
     """Daily snapshot of portfolio value for historical tracking."""
 
@@ -94,6 +136,17 @@ class PortfolioSnapshot(Base):
     cash_balance: float = Column(Float, nullable=False, default=0.0)  # type: ignore[assignment]
     day_pnl: float = Column(Float, nullable=True)  # type: ignore[assignment]
     num_positions: int = Column(Integer, nullable=True)  # type: ignore[assignment]
+    captured_at = Column(DateTime, server_default=func.now())
+
+
+class BenchmarkSnapshot(Base):
+    """Daily snapshot of S&P 500 closing price for alpha calculation."""
+
+    __tablename__ = "benchmark_snapshots"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    ticker: str = Column(String(10), nullable=False, default="SPY")  # type: ignore[assignment]
+    close_price: float = Column(Float, nullable=False)  # type: ignore[assignment]
     captured_at = Column(DateTime, server_default=func.now())
 
 
@@ -117,11 +170,33 @@ class PoliticianSignal(Base):
     generated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class ClosingPrice(Base):
+    """Cached daily closing prices for momentum/trend calculations."""
+
+    __tablename__ = "closing_prices"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+    ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+    date: DateTime = Column(DateTime, nullable=False, index=True)  # type: ignore[assignment]
+    close: float = Column(Float, nullable=False)  # type: ignore[assignment]
+    cached_at = Column(DateTime, server_default=func.now())
+
+
 @functools.lru_cache(maxsize=1)
 def get_engine():  # type: ignore[no-untyped-def]
     """Return the cached SQLAlchemy engine, creating it on first call."""
     settings = get_settings()
     return create_engine(settings.database_url, echo=False)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_session_factory():  # type: ignore[no-untyped-def]
+    """Return a cached sessionmaker bound to the engine.
+
+    Creating a new sessionmaker on every get_session() call is wasteful;
+    the factory itself is stateless so it is safe to share.
+    """
+    return sessionmaker(bind=get_engine(), expire_on_commit=False)
 
 
 def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
@@ -140,6 +215,8 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
             if "report_url" not in existing:
                 conn.execute(text("ALTER TABLE politician_trades ADD COLUMN report_url VARCHAR(500)"))
                 conn.commit()
+
+    # external_accounts / external_positions created via create_all; no column migrations needed yet
 
 
 def init_db() -> None:
@@ -166,8 +243,7 @@ def get_session() -> Generator[Session, None, None]:
     back. In either case the session is closed.
     ``init_db()`` must be called at startup before any session is used.
     """
-    factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
-    session = factory()
+    session = _get_session_factory()()
     try:
         yield session
         session.commit()

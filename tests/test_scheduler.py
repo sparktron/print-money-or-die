@@ -54,10 +54,16 @@ class TestRunRebalance:
     def test_skips_when_manual_mode(self) -> None:
         from pmod.scheduler.jobs import _run_rebalance
 
-        mock_plan = MagicMock()
+        # Mock a HolisticRebalancePlan with one account rebalance
+        mock_acct_rebalance = MagicMock()
         mock_trade = MagicMock(action="buy", shares_delta=10)
-        mock_plan.trades = [mock_trade]
-        mock_plan.net_cash_change = -500.0
+        mock_acct_rebalance.trades = [mock_trade]
+        mock_acct_rebalance.account_name = "Schwab"
+        mock_acct_rebalance.net_cash_change = -500.0
+
+        mock_plan = MagicMock()
+        mock_plan.account_rebalances = [mock_acct_rebalance]
+        mock_plan.portfolio_net_cash_change = -500.0
 
         prefs = {"max_position_pct": 5.0, "trade_execution": "manual-confirm"}
         with patch("pmod.preferences.profile.load_preferences_dict", return_value=prefs):
@@ -71,9 +77,14 @@ class TestRunRebalance:
     def test_no_action_when_all_hold(self) -> None:
         from pmod.scheduler.jobs import _run_rebalance
 
-        mock_plan = MagicMock()
+        # Mock a HolisticRebalancePlan with one account rebalance
+        mock_acct_rebalance = MagicMock()
         mock_trade = MagicMock(action="hold")
-        mock_plan.trades = [mock_trade]
+        mock_acct_rebalance.trades = [mock_trade]
+        mock_acct_rebalance.account_name = "Schwab"
+
+        mock_plan = MagicMock()
+        mock_plan.account_rebalances = [mock_acct_rebalance]
 
         prefs = {"max_position_pct": 5.0, "trade_execution": "auto"}
         with patch("pmod.preferences.profile.load_preferences_dict", return_value=prefs):
@@ -85,16 +96,20 @@ class TestCaptureSnapshot:
     def test_skips_when_no_account(self) -> None:
         from pmod.scheduler.jobs import _capture_snapshot
 
-        with patch("pmod.broker.schwab.get_account_summary", return_value=None):
-            _capture_snapshot()  # Should not raise
+        with patch("pmod.broker.schwab.get_all_account_summaries", return_value=[]):
+            with patch("pmod.data.external_accounts.list_accounts", return_value=[]):
+                _capture_snapshot()  # Should not raise
 
     def test_handles_exception_gracefully(self) -> None:
         from pmod.scheduler.jobs import _capture_snapshot
 
-        with patch("pmod.broker.schwab.get_account_summary", side_effect=RuntimeError("no auth")):
-            with patch("pmod.scheduler.jobs.log") as mock_log:
-                _capture_snapshot()
-                mock_log.error.assert_called_once()
+        # Schwab failure is handled inside the inner try/except as a warning
+        # (external accounts may still succeed), not as a top-level error.
+        with patch("pmod.broker.schwab.get_all_account_summaries", side_effect=RuntimeError("no auth")):
+            with patch("pmod.data.external_accounts.list_accounts", return_value=[]):
+                with patch("pmod.scheduler.jobs.log") as mock_log:
+                    _capture_snapshot()
+                    mock_log.warning.assert_called()
 
 
 class TestStartStopScheduler:

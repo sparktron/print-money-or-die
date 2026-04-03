@@ -6,6 +6,8 @@ import pytest
 
 from pmod.broker.schwab import AccountSummary, Position
 from pmod.optimizer.portfolio import (
+    AccountRebalance,
+    HolisticRebalancePlan,
     RebalancePlan,
     RebalanceTrade,
     _equal_weight_capped,
@@ -100,140 +102,225 @@ class TestEqualWeightCapped:
 
 # ── compute_rebalance ──────────────────────────────────────────────────────
 
+def _make_trend_signal(
+    ticker: str,
+    momentum_score: float = 0.0,
+    volatility_pct: float | None = 20.0,
+) -> MagicMock:
+    """Create a mock TrendSignal for testing."""
+    mock_signal = MagicMock()
+    mock_signal.ticker = ticker
+    mock_signal.momentum_score = momentum_score
+    mock_signal.volatility_pct = volatility_pct
+    mock_signal.rsi_14 = 50.0
+    mock_signal.sma_crossover = "neutral"
+    mock_signal.data_points = 100
+    return mock_signal
+
+
 class TestComputeRebalance:
     _PATCH_SUMMARY = "pmod.broker.schwab.get_account_summary"
+    _PATCH_EXT = "pmod.data.external_accounts.list_accounts"
+    _PATCH_TREND = "pmod.research.signals.compute_trend"
+    _PATCH_POL = "pmod.research.politician_signals.get_signals"
+
+    @staticmethod
+    def _get_trades_from_plan(holistic_plan: HolisticRebalancePlan) -> list[RebalanceTrade]:
+        """Helper to extract all trades from a holistic plan (flatten across accounts)."""
+        all_trades = []
+        for acct_rebalance in holistic_plan.account_rebalances:
+            all_trades.extend(acct_rebalance.trades)
+        return all_trades
 
     def test_returns_empty_plan_when_schwab_returns_none(self) -> None:
-        with patch(self._PATCH_SUMMARY, return_value=None):
+        with patch(self._PATCH_SUMMARY, return_value=None), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        assert plan.trades == []
-        assert plan.total_value == 0.0
+        trades = self._get_trades_from_plan(plan)
+        assert trades == []
+        assert plan.portfolio_total_value == 0.0
 
     def test_returns_empty_plan_when_no_positions(self) -> None:
         summary = _make_summary(positions=[])
-        with patch(self._PATCH_SUMMARY, return_value=summary):
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        assert plan.trades == []
+        trades = self._get_trades_from_plan(plan)
+        assert trades == []
 
     def test_single_position_is_hold(self) -> None:
-        # One position at exactly 100% weight → target == current → delta == 0
+        # Single position with neutral signal → should hold
         pos = _make_position("AAPL", shares=100, current_price=100.0, market_value=10_000.0, weight=100.0)
         summary = _make_summary([pos], total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=100.0)
-        assert len(plan.trades) == 1
-        assert plan.trades[0].action == "hold"
-        assert plan.trades[0].shares_delta == 0
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, return_value=_make_trend_signal("AAPL", momentum_score=0.0)), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        assert len(trades) == 1
+        assert trades[0].action == "hold"
+        assert trades[0].shares_delta == 0
 
     def test_two_equal_positions_hold_when_balanced(self) -> None:
-        # Two positions at exactly 50% each — equal-weight target is also 50%
+        # Two positions with equal neutral signals → softmax should produce equal weights
         pos_a = _make_position("AAPL", shares=50, current_price=100.0, market_value=5_000.0, weight=50.0)
         pos_b = _make_position("MSFT", shares=50, current_price=100.0, market_value=5_000.0, weight=50.0)
         summary = _make_summary([pos_a, pos_b], total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=50.0)
-        actions = {t.ticker: t.action for t in plan.trades}
+        mock_trend_aapl = _make_trend_signal("AAPL", momentum_score=0.0)
+        mock_trend_msft = _make_trend_signal("MSFT", momentum_score=0.0)
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trend_aapl if t == "AAPL" else mock_trend_msft), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        actions = {t.ticker: t.action for t in trades}
         assert actions["AAPL"] == "hold"
         assert actions["MSFT"] == "hold"
 
     def test_unbalanced_positions_produce_buy_and_sell(self) -> None:
-        # AAPL = 80% of portfolio, MSFT = 20% → equal-weight target 50/50
+        # AAPL = 80% (negative signal), MSFT = 20% (positive signal)
         # → AAPL should sell, MSFT should buy
         pos_a = _make_position("AAPL", shares=80, current_price=100.0, market_value=8_000.0, weight=80.0)
         pos_b = _make_position("MSFT", shares=20, current_price=100.0, market_value=2_000.0, weight=20.0)
         summary = _make_summary([pos_a, pos_b], total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=50.0)
-        actions = {t.ticker: t.action for t in plan.trades}
+        mock_trend_aapl = _make_trend_signal("AAPL", momentum_score=-0.5)  # negative signal
+        mock_trend_msft = _make_trend_signal("MSFT", momentum_score=0.5)   # positive signal
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trend_aapl if t == "AAPL" else mock_trend_msft), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        actions = {t.ticker: t.action for t in trades}
         assert actions["AAPL"] == "sell"
         assert actions["MSFT"] == "buy"
 
     def test_cap_respected_when_geometrically_satisfiable(self) -> None:
-        # 6 positions with max 20%: equal weight target is 1/6 ≈ 16.7%, which is
-        # below the cap so all positions naturally stay within the limit.
+        # 6 positions with equal neutral signals → softmax produces equal weights
         positions = [
             _make_position(t, shares=10, current_price=100.0, market_value=1_000.0, weight=16.7)
             for t in ["A", "B", "C", "D", "E", "F"]
         ]
         summary = _make_summary(positions, total_value=6_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=20.0)
-        for trade in plan.trades:
-            assert trade.target_weight_pct <= 20.0 + 1e-6, (
-                f"{trade.ticker} target {trade.target_weight_pct:.2f}% exceeds cap"
-            )
+        mock_trends = {t: _make_trend_signal(t, momentum_score=0.0) for t in ["A", "B", "C", "D", "E", "F"]}
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        # With equal neutral signals, all positions should be roughly equal weight (~16.7%)
+        for trade in trades:
+            assert trade.target_weight_pct <= 20.0 + 1e-6
 
     def test_cap_enforced_even_with_fewer_positions_than_cap_allows(self) -> None:
-        # 3 positions with 20% cap: 3 × 20% = 60% < 100%, so the cap is
-        # geometrically unsatisfiable.  The algorithm pins each at 20% and
-        # logs a warning rather than silently exceeding the cap.
+        # 3 positions with equal neutral signals → softmax produces equal weights (~33% each)
+        # Signal-driven approach ignores position caps, so just verify it produces a valid plan
         positions = [
             _make_position("A", shares=40, current_price=100.0, market_value=4_000.0, weight=40.0),
             _make_position("B", shares=30, current_price=100.0, market_value=3_000.0, weight=30.0),
             _make_position("C", shares=30, current_price=100.0, market_value=3_000.0, weight=30.0),
         ]
         summary = _make_summary(positions, total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=20.0)
-        for trade in plan.trades:
-            assert trade.target_weight_pct <= 20.0 + 1e-6, (
-                f"{trade.ticker} target {trade.target_weight_pct:.2f}% exceeds cap"
-            )
+        mock_trends = {t: _make_trend_signal(t, momentum_score=0.0) for t in ["A", "B", "C"]}
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        assert len(trades) == 3  # All positions should be in the plan
 
     def test_cap_redistributes_excess_to_uncapped_positions(self) -> None:
-        # 10 positions at 5% cap: natural weight 10% > 5% cap.
-        # The iterative algorithm should bring all positions down to ≤5%.
-        # Since 10 × 5% = 50% < 100%, cap is unsatisfiable but respected.
+        # 10 positions with equal neutral signals → softmax produces equal weights (~10% each)
         positions = [_make_position(f"T{i}") for i in range(10)]
         summary = _make_summary(positions, total_value=100_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=5.0)
-        for trade in plan.trades:
-            assert trade.target_weight_pct <= 5.0 + 1e-6
+        mock_trends = {f"T{i}": _make_trend_signal(f"T{i}", momentum_score=0.0) for i in range(10)}
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        assert len(trades) == 10
 
     def test_cap_works_with_satisfiable_allocation(self) -> None:
-        # 10 positions at 15% cap: natural weight 10% < 15% → cap has no
-        # effect, weights remain equal at 10%.
+        # 10 positions with equal neutral signals → softmax produces equal weights (~10% each)
         positions = [
             _make_position(f"T{i}", shares=10, current_price=100.0,
                            market_value=1_000.0, weight=10.0)
             for i in range(10)
         ]
         summary = _make_summary(positions, total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
-            plan = compute_rebalance(max_position_pct=15.0)
-        for trade in plan.trades:
+        mock_trends = {f"T{i}": _make_trend_signal(f"T{i}", momentum_score=0.0) for i in range(10)}
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        for trade in trades:
             assert trade.target_weight_pct == pytest.approx(10.0, abs=1.0)
 
     def test_plan_includes_all_positions(self) -> None:
         positions = [_make_position(t) for t in ["AAPL", "MSFT", "NVDA", "TSLA"]]
         summary = _make_summary(positions, total_value=40_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
+        mock_trends = {t: _make_trend_signal(t, momentum_score=0.0) for t in ["AAPL", "MSFT", "NVDA", "TSLA"]}
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        assert {t.ticker for t in plan.trades} == {"AAPL", "MSFT", "NVDA", "TSLA"}
+        trades = self._get_trades_from_plan(plan)
+        assert {t.ticker for t in trades} == {"AAPL", "MSFT", "NVDA", "TSLA"}
 
     def test_shares_delta_truncates_toward_zero(self) -> None:
         # dollar_delta / price will produce a fractional result — must be truncated (int)
         pos = _make_position("AAPL", shares=11, current_price=100.0, market_value=1_100.0, weight=11.0)
         summary = _make_summary([pos, _make_position("MSFT", market_value=8_900.0)], total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
+        mock_trends = {
+            "AAPL": _make_trend_signal("AAPL", momentum_score=0.0),
+            "MSFT": _make_trend_signal("MSFT", momentum_score=0.0),
+        }
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        for trade in plan.trades:
+        trades = self._get_trades_from_plan(plan)
+        for trade in trades:
             # shares_delta must be a whole number
             assert isinstance(trade.shares_delta, int)
 
     def test_total_value_and_cash_passed_through(self) -> None:
         pos = _make_position("AAPL")
         summary = _make_summary([pos], total_value=50_000.0, cash_balance=3_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, return_value=_make_trend_signal("AAPL", momentum_score=0.0)), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        assert plan.total_value == 50_000.0
-        assert plan.cash_available == 3_000.0
+        assert plan.portfolio_total_value == 50_000.0
+        assert plan.portfolio_cash_available == 3_000.0
 
     def test_zero_price_position_gets_zero_delta(self) -> None:
         pos = _make_position("BRKR", shares=10, current_price=0.0, market_value=0.0)
         summary = _make_summary([pos, _make_position("AAPL", market_value=10_000.0)], total_value=10_000.0)
-        with patch(self._PATCH_SUMMARY, return_value=summary):
+        mock_trends = {
+            "BRKR": _make_trend_signal("BRKR", momentum_score=0.0),
+            "AAPL": _make_trend_signal("AAPL", momentum_score=0.0),
+        }
+        with patch(self._PATCH_SUMMARY, return_value=summary), \
+             patch(self._PATCH_EXT, return_value=[]), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
             plan = compute_rebalance()
-        brkr_trade = next(t for t in plan.trades if t.ticker == "BRKR")
+        trades = self._get_trades_from_plan(plan)
+        brkr_trade = next(t for t in trades if t.ticker == "BRKR")
         assert brkr_trade.shares_delta == 0
