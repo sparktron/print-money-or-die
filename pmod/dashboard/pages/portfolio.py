@@ -1,6 +1,7 @@
 """Portfolio performance view — live Schwab data with sample fallback."""
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 
 import plotly.graph_objects as go
@@ -83,10 +84,18 @@ def _period_cutoff(period: str) -> date:
     if period == "1W":
         return today - timedelta(weeks=1)
     if period == "1M":
-        return today - timedelta(days=30)
+        # Step back exactly one calendar month
+        month = today.month - 1 if today.month > 1 else 12
+        year = today.year if today.month > 1 else today.year - 1
+        day = min(today.day, monthrange(year, month)[1])
+        return date(year, month, day)
     if period == "YTD":
         return date(today.year, 1, 1)
-    return today - timedelta(days=365)  # 1Y default
+    # 1Y: same calendar day last year; handle Feb 29 → Feb 28 on non-leap years
+    try:
+        return date(today.year - 1, today.month, today.day)
+    except ValueError:
+        return date(today.year - 1, today.month, 28)
 
 
 def build_chart_figure(
@@ -105,6 +114,10 @@ def build_chart_figure(
         hist_result = get_historical_returns(days=days_back)
 
     is_real = False
+    dates = []
+    portfolio_pct = []
+    benchmark_pct = []
+
     if hist_result is not None and len(hist_result[2]) >= 2:
         portfolio_values_all, benchmark_values_all, dates_all = hist_result
         paired = [
@@ -120,11 +133,13 @@ def build_chart_figure(
             benchmark_pct = [(b / b0 - 1) * 100 for _, _, b in paired]
             is_real = True
 
-    if not is_real:
+    # If we don't have enough real data covering the requested period, use sample data
+    if not is_real or len(dates) < {"1W": 5, "1M": 20, "YTD": 50, "1Y": 100}.get(period, 50):
         n = {"1W": 7, "1M": 30, "YTD": max((date.today() - date(date.today().year, 1, 1)).days, 2), "1Y": 365}.get(period, 365)
         dates = [(datetime.now() - timedelta(days=n - 1 - i)).strftime("%Y-%m-%d") for i in range(n)]
         portfolio_pct = [0 + (12 * i / max(n - 1, 1)) + ((i % 7 - 3) * 0.3) for i in range(n)]
         benchmark_pct = [0 + (10 * i / max(n - 1, 1)) + ((i % 7 - 3) * 0.25) for i in range(n)]
+        is_real = False
 
     last_p = portfolio_pct[-1]
     last_b = benchmark_pct[-1]
@@ -375,11 +390,14 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
         # Calculate P/L for external accounts (no daily snapshots, so day_pnl = 0)
         rows = []
         ext_day_pnl = 0.0
+        positions_total = 0.0
         for p in sorted(positions, key=lambda x: x.market_value or 0, reverse=True):
             shares = p.shares or 0
             current_price = p.current_price or 0
             avg_cost = p.avg_cost or 0
             market_value = p.market_value or 0.0
+
+            positions_total += market_value
 
             # Total P/L: (current_price - avg_cost) * shares
             total_pnl = (current_price - avg_cost) * shares if avg_cost and shares else 0.0
@@ -403,7 +421,9 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
                 "weight": (market_value / full_portfolio_total * 100) if full_portfolio_total and market_value else 0.0,
             })
 
-        entries.append((ext["name"], ext["account_type"], acct_total, 0.0, ext_day_pnl, rows, True))
+        # Calculate cash as total value minus positions total
+        ext_cash = max(0.0, acct_total - positions_total)
+        entries.append((ext["name"], ext["account_type"], acct_total, ext_cash, ext_day_pnl, rows, True))
 
     # ── Apply account filter ───────────────────────────────────────────────
     if filter_account and filter_account != "__all__":

@@ -7,6 +7,7 @@ score that feeds the screener and watchlist.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import dataclass
 
@@ -26,9 +27,12 @@ class TrendSignal:
     data_points: int              # how many daily closes were available
 
 
-# Simple in-memory cache for trend results to avoid refetching within TTL window
-_TREND_CACHE: dict[str, tuple[TrendSignal, float]] = {}  # {ticker: (TrendSignal, timestamp)}
-_TREND_CACHE_TTL = 3600  # 1 hour in seconds
+# Thread-safe in-memory cache for trend results.
+# Bounded at _TREND_CACHE_MAX entries; oldest entries are evicted when full.
+_TREND_CACHE: dict[str, tuple[TrendSignal, float]] = {}  # {ticker: (signal, timestamp)}
+_TREND_CACHE_LOCK = threading.Lock()
+_TREND_CACHE_TTL = 3600   # 1 hour in seconds
+_TREND_CACHE_MAX = 500    # max entries before eviction
 
 
 def compute_rsi(closes: list[float], period: int = 14) -> float | None:
@@ -154,9 +158,11 @@ def compute_trend(ticker: str) -> TrendSignal:
     ticker = ticker.upper()
     now = time.time()
 
-    # Check in-memory cache
-    if ticker in _TREND_CACHE:
-        cached_signal, cached_at = _TREND_CACHE[ticker]
+    # Check in-memory cache (lock only for the read to minimise contention)
+    with _TREND_CACHE_LOCK:
+        cached = _TREND_CACHE.get(ticker)
+    if cached is not None:
+        cached_signal, cached_at = cached
         age = now - cached_at
         if age < _TREND_CACHE_TTL:
             log.debug("trend_cache_hit", ticker=ticker, age_sec=round(age, 1))
@@ -183,8 +189,14 @@ def compute_trend(ticker: str) -> TrendSignal:
         data_points=len(closes),
     )
 
-    # Store in in-memory cache
-    _TREND_CACHE[ticker] = (signal, now)
+    # Store in in-memory cache (evict oldest entries when the cache is full)
+    with _TREND_CACHE_LOCK:
+        if len(_TREND_CACHE) >= _TREND_CACHE_MAX:
+            # Remove the 50 least-recently-cached entries
+            evict = sorted(_TREND_CACHE, key=lambda t: _TREND_CACHE[t][1])[:50]
+            for t in evict:
+                del _TREND_CACHE[t]
+        _TREND_CACHE[ticker] = (signal, now)
 
     return signal
 

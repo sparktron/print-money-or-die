@@ -4,7 +4,7 @@ from __future__ import annotations
 import structlog
 from datetime import datetime, timedelta
 
-from pmod.data.models import PortfolioSnapshot, BenchmarkSnapshot, get_session
+from pmod.data.models import BenchmarkSnapshot, PortfolioSnapshot, get_session
 
 log = structlog.get_logger()
 
@@ -17,7 +17,7 @@ def get_historical_returns(days: int = 365) -> tuple[list[float], list[float], l
     try:
         with get_session() as session:
             # Get portfolio snapshots
-            cutoff = datetime.now() - timedelta(days=days)
+            cutoff = datetime.utcnow() - timedelta(days=days)
             portfolio_snapshots = (
                 session.query(PortfolioSnapshot)
                 .filter(PortfolioSnapshot.captured_at >= cutoff)
@@ -73,7 +73,7 @@ def get_account_historical_returns(
     """
     try:
         from pmod.data.models import AccountDailyValue
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = datetime.utcnow() - timedelta(days=days)
         with get_session() as session:
             acct_snaps = (
                 session.query(AccountDailyValue)
@@ -127,6 +127,9 @@ def calculate_alpha() -> dict | None:
     portfolio_values, benchmark_values, _ = result
 
     if len(portfolio_values) < 2:
+        return None
+
+    if portfolio_values[0] == 0 or benchmark_values[0] == 0:
         return None
 
     # Calculate returns

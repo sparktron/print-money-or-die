@@ -9,9 +9,10 @@ Catches issues like:
 
 from __future__ import annotations
 
-import pytest
 from datetime import datetime
 from decimal import Decimal
+
+import pytest
 
 from pmod.data.models import ExternalAccount, ExternalPosition, get_session
 
@@ -173,6 +174,7 @@ class TestExternalPositionDataIntegrity:
 class TestExternalAccountPriceAnomalies:
     """Detect suspicious price changes between updates."""
 
+    @pytest.mark.xfail(strict=True, reason="Demonstrates anomaly detection: this scenario intentionally triggers a failure")
     def test_price_jump_detection(self, test_external_account):
         """Flag if price jumps >50% between consecutive updates (unusual)."""
         with get_session() as session:

@@ -67,8 +67,12 @@ def mask_pct(value: float, masked: bool | None = None) -> str:
     if not should_mask:
         return f"{value:.2f}%"
 
+    # Handle zero and very small values — just show "0.00%"
+    if abs(value) < 0.01:
+        return "0.00%"
+
     formatted = f"{value:.2f}"
-    digits_only = formatted.replace(",", "")
+    digits_only = formatted.replace(",", "").replace(".", "")
     visible_chars = digits_only[-2:] if len(digits_only) > 2 else digits_only
     hidden_count = max(0, len(digits_only) - 2)
     return "*" * hidden_count + visible_chars + "%"
@@ -206,6 +210,7 @@ def status_badge(text: str, variant: str = "neutral") -> html.Span:
         "green": (COLORS["green"], COLORS["green_bg"]),
         "red": (COLORS["red"], COLORS["red_bg"]),
         "orange": (COLORS["orange"], COLORS["orange_bg"]),
+        "accent": (COLORS["accent"], COLORS["accent_glow"]),
         "neutral": (COLORS["text_secondary"], COLORS["surface_elevated"]),
     }
     fg, bg = color_map.get(variant, color_map["neutral"])

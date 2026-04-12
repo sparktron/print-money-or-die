@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,11 @@ import structlog
 from pmod.data.models import ExternalAccount, ExternalPosition, get_session
 
 log = structlog.get_logger()
+
+# Tickers must start with a letter and contain only letters, digits, dots,
+# dashes, or slashes — and be no longer than 10 characters.
+# This rejects footer rows, long sector-name strings, and all-numeric tokens.
+_TICKER_RE = re.compile(r'^[A-Z][A-Z0-9./\-]{0,9}$')
 
 # ---------------------------------------------------------------------------
 # Column name normalisation
@@ -112,8 +118,8 @@ def parse_csv(source: str | Path | IO[str]) -> list[ImportedRow]:
     rows: list[ImportedRow] = []
     for row in reader:
         ticker = get(row, "ticker").upper()
-        # Skip blank, contain spaces (not a real ticker), or purely non-alpha rows
-        if not ticker or " " in ticker or not any(c.isalpha() for c in ticker):
+        # Reject blank, whitespace-containing, all-numeric, or implausibly long strings
+        if not _TICKER_RE.match(ticker):
             continue
         # Skip common footer / cash-row patterns
         if ticker.lower() in ("total", "totals", "grand total", "account total", "cash"):

@@ -44,8 +44,8 @@ def _load_picks() -> list[dict]:
 
         picks: list[dict] = []
         for item in items:
-            mom = int((item.momentum_score or 0) * 100)
-            mom = max(0, min(100, mom + 50))  # map [-1,1] → [0,100]
+            mom = int(((item.momentum_score or 0) + 1.0) * 50)  # map [-1,1] → [0,100]
+            mom = max(0, min(100, mom))
 
             pol = pol_data.get(item.ticker, {})
             pol_signal = pol.get("signal", "")
@@ -88,6 +88,8 @@ def _load_picks() -> list[dict]:
                 if not api_key:
                     return ticker, None
                 try:
+                    from pmod.utils.retry import polygon_limiter
+                    polygon_limiter.acquire()
                     resp = httpx.get(
                         f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev",
                         params={"apiKey": api_key},

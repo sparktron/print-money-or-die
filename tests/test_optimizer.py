@@ -324,3 +324,115 @@ class TestComputeRebalance:
         trades = self._get_trades_from_plan(plan)
         brkr_trade = next(t for t in trades if t.ticker == "BRKR")
         assert brkr_trade.shares_delta == 0
+
+
+# ── Mixed-account scenarios ─────────────────────────────────────────────────
+
+def _make_ext_position(
+    ticker: str,
+    shares: float = 10.0,
+    current_price: float = 100.0,
+    market_value: float | None = None,
+) -> MagicMock:
+    pos = MagicMock()
+    pos.ticker = ticker
+    pos.company_name = f"{ticker} Inc."
+    pos.shares = shares
+    pos.current_price = current_price
+    pos.avg_cost = current_price * 0.9
+    pos.market_value = market_value if market_value is not None else shares * current_price
+    return pos
+
+
+class TestComputeRebalanceMixedAccounts:
+    _PATCH_SUMMARY = "pmod.broker.schwab.get_account_summary"
+    _PATCH_EXT_LIST = "pmod.data.external_accounts.list_accounts"
+    _PATCH_EXT_POS = "pmod.data.external_accounts.get_positions"
+    _PATCH_TREND = "pmod.research.signals.compute_trend"
+    _PATCH_POL = "pmod.research.politician_signals.get_signals"
+
+    @staticmethod
+    def _get_trades_from_plan(plan: HolisticRebalancePlan) -> list[RebalanceTrade]:
+        return [t for ar in plan.account_rebalances for t in ar.trades]
+
+    def test_only_external_accounts_no_schwab(self) -> None:
+        """When Schwab returns None, external-only portfolio still produces a valid plan."""
+        ext_pos = [_make_ext_position("VTI", shares=50, current_price=200.0)]
+        ext_accounts = [{"name": "Fidelity 401k", "account_type": "401k", "total_value": 10_000.0}]
+        mock_trend = _make_trend_signal("VTI", momentum_score=0.2)
+        with patch(self._PATCH_SUMMARY, return_value=None), \
+             patch(self._PATCH_EXT_LIST, return_value=ext_accounts), \
+             patch(self._PATCH_EXT_POS, return_value=ext_pos), \
+             patch(self._PATCH_TREND, return_value=mock_trend), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+        trades = self._get_trades_from_plan(plan)
+        assert len(trades) == 1
+        assert trades[0].ticker == "VTI"
+        assert plan.portfolio_total_value == 10_000.0
+
+    def test_schwab_plus_external_accounts(self) -> None:
+        """Schwab and an external account are both included in the plan."""
+        schwab_pos = _make_position("AAPL", shares=10, current_price=200.0, market_value=2_000.0)
+        schwab_summary = _make_summary([schwab_pos], total_value=3_000.0, cash_balance=1_000.0)
+
+        ext_pos = [_make_ext_position("MSFT", shares=5, current_price=400.0, market_value=2_000.0)]
+        ext_accounts = [{"name": "IRA", "account_type": "ira", "total_value": 2_000.0}]
+
+        mock_trends = {
+            "AAPL": _make_trend_signal("AAPL", momentum_score=0.3),
+            "MSFT": _make_trend_signal("MSFT", momentum_score=0.1),
+        }
+        with patch(self._PATCH_SUMMARY, return_value=schwab_summary), \
+             patch(self._PATCH_EXT_LIST, return_value=ext_accounts), \
+             patch(self._PATCH_EXT_POS, return_value=ext_pos), \
+             patch(self._PATCH_TREND, side_effect=lambda t: mock_trends[t]), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+
+        account_names = {ar.account_name for ar in plan.account_rebalances}
+        all_tickers = {t.ticker for t in self._get_trades_from_plan(plan)}
+        assert "AAPL" in all_tickers
+        assert "MSFT" in all_tickers
+        assert plan.portfolio_total_value == pytest.approx(5_000.0)
+
+    def test_external_account_with_zero_positions(self) -> None:
+        """An external account with no positions contributes no trades."""
+        schwab_pos = _make_position("NVDA")
+        schwab_summary = _make_summary([schwab_pos], total_value=10_000.0)
+        ext_accounts = [{"name": "Empty 401k", "account_type": "401k", "total_value": 0.0}]
+
+        with patch(self._PATCH_SUMMARY, return_value=schwab_summary), \
+             patch(self._PATCH_EXT_LIST, return_value=ext_accounts), \
+             patch(self._PATCH_EXT_POS, return_value=[]), \
+             patch(self._PATCH_TREND, return_value=_make_trend_signal("NVDA", momentum_score=0.0)), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+
+        tickers = {t.ticker for t in self._get_trades_from_plan(plan)}
+        assert "NVDA" in tickers
+        # Empty 401k should not add any trades
+        assert len(plan.account_rebalances) == 1
+
+    def test_same_ticker_in_multiple_accounts(self) -> None:
+        """A ticker held in both Schwab and an external account gets signals computed once."""
+        schwab_pos = _make_position("SPY", shares=10, current_price=500.0, market_value=5_000.0)
+        schwab_summary = _make_summary([schwab_pos], total_value=5_000.0)
+
+        ext_pos = [_make_ext_position("SPY", shares=5, current_price=500.0, market_value=2_500.0)]
+        ext_accounts = [{"name": "IRA", "account_type": "ira", "total_value": 2_500.0}]
+
+        call_count = {"n": 0}
+        def _trend(ticker: str):
+            call_count["n"] += 1
+            return _make_trend_signal(ticker, momentum_score=0.0)
+
+        with patch(self._PATCH_SUMMARY, return_value=schwab_summary), \
+             patch(self._PATCH_EXT_LIST, return_value=ext_accounts), \
+             patch(self._PATCH_EXT_POS, return_value=ext_pos), \
+             patch(self._PATCH_TREND, side_effect=_trend), \
+             patch(self._PATCH_POL, return_value=[]):
+            plan = compute_rebalance()
+
+        # compute_trend should be called exactly once for "SPY" (unique tickers only)
+        assert call_count["n"] == 1

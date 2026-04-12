@@ -1,5 +1,6 @@
 """Schwab OAuth2 flow + token refresh logic."""
 
+import stat
 import sys
 
 import structlog
@@ -43,6 +44,7 @@ def run_oauth_flow() -> Client:
         token_path=str(settings.schwab_token_path),
     )
     log.info("login successful", token_path=str(settings.schwab_token_path))
+    _warn_token_permissions(settings.schwab_token_path)
     return client
 
 
@@ -85,6 +87,23 @@ def auth_status() -> dict:
         return {"connected": False, "reason": "Token file unreadable — run `pmod auth login`"}
 
 
+def _warn_token_permissions(path: "Path") -> None:  # type: ignore[name-defined]
+    """Log a warning if the token file is readable by group or others."""
+    try:
+        from pathlib import Path as _Path
+        p = _Path(path) if not hasattr(path, "stat") else path
+        if p.exists():
+            mode = p.stat().st_mode
+            if mode & (stat.S_IRGRP | stat.S_IROTH):
+                log.warning(
+                    "token_file_world_readable",
+                    path=str(p),
+                    hint="Run: chmod 600 " + str(p),
+                )
+    except Exception:
+        pass  # permission check is best-effort
+
+
 def get_client() -> Client:
     """Return an authenticated Schwab client, using a cached in-process instance when available.
 
@@ -101,6 +120,7 @@ def get_client() -> Client:
 
     if settings.schwab_token_path.exists():
         log.info("loading cached Schwab token", path=str(settings.schwab_token_path))
+        _warn_token_permissions(settings.schwab_token_path)
         _cached_client = client_from_token_file(
             token_path=str(settings.schwab_token_path),
             api_key=settings.schwab_app_key,

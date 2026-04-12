@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import structlog
@@ -174,7 +175,7 @@ class HolisticRebalancePlan:
     portfolio_net_cash_change: float = 0.0
 
 
-def compute_rebalance(max_position_pct: float = 5.0) -> HolisticRebalancePlan | RebalancePlan:
+def compute_rebalance(max_position_pct: float = 5.0) -> HolisticRebalancePlan:
     """Compute signal-driven rebalance across ALL accounts.
 
     Instead of equal-weighting, this analyzes:
@@ -248,31 +249,41 @@ def compute_rebalance(max_position_pct: float = 5.0) -> HolisticRebalancePlan | 
         return HolisticRebalancePlan()
 
     # ─── Build portfolio-wide ticker list with aggregated positions ──────────
-    ticker_totals: dict[str, dict] = {}  # {ticker: {current_value, volatility, momentum, positions_by_account}}
+    # First pass: collect unique tickers and their first-seen position metadata
+    ticker_totals: dict[str, dict] = {}
     for account_name, positions in all_positions.items():
         for pos in positions:
             if pos.ticker not in ticker_totals:
-                # Compute technical signals (including volatility & momentum) — graceful degradation on failure
-                volatility = None
-                momentum = 0.0
-                try:
-                    trend = compute_trend(pos.ticker)
-                    volatility = trend.volatility_pct
-                    momentum = trend.momentum_score
-                    log.info("trend_computed", ticker=pos.ticker, momentum=momentum, volatility=volatility)
-                except Exception as exc:
-                    log.error("trend_compute_failed", ticker=pos.ticker, error=str(exc)[:60])
-
                 ticker_totals[pos.ticker] = {
                     "company_name": pos.company_name,
                     "current_price": pos.current_price,
                     "current_value": 0.0,
-                    "volatility_pct": volatility,
-                    "momentum_score": momentum,
+                    "volatility_pct": None,
+                    "momentum_score": 0.0,
                     "by_account": {},
                 }
             ticker_totals[pos.ticker]["current_value"] += pos.market_value or 0.0
             ticker_totals[pos.ticker]["by_account"][account_name] = pos
+
+    # Second pass: fetch technical signals in parallel (max 5 threads respects rate limits)
+    unique_tickers = list(ticker_totals.keys())
+    log.info("fetching_trends_parallel", tickers=len(unique_tickers))
+
+    def _safe_trend(ticker: str) -> tuple[str, float | None, float]:
+        try:
+            trend = compute_trend(ticker)
+            return ticker, trend.volatility_pct, trend.momentum_score
+        except Exception as exc:
+            log.error("trend_compute_failed", ticker=ticker, error=str(exc)[:60])
+            return ticker, None, 0.0
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_safe_trend, t): t for t in unique_tickers}
+        for future in as_completed(futures, timeout=120):
+            ticker, volatility, momentum = future.result()
+            ticker_totals[ticker]["volatility_pct"] = volatility
+            ticker_totals[ticker]["momentum_score"] = momentum
+            log.info("trend_computed", ticker=ticker, momentum=momentum, volatility=volatility)
 
     # ─── Compute signal scores and target weights ──────────────────────────
     log.info("computing_signal_scores", tickers=len(ticker_totals))

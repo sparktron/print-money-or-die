@@ -1,12 +1,21 @@
 """Tests for pmod.research.signals — technical indicators."""
 
+import threading
+import time
+from unittest.mock import patch
+
 import pytest
 
 from pmod.research.signals import (
+    _TREND_CACHE,
+    _TREND_CACHE_LOCK,
+    _TREND_CACHE_MAX,
+    _TREND_CACHE_TTL,
     compute_momentum_score,
     compute_rsi,
     compute_sma,
     compute_sma_crossover,
+    compute_trend,
     compute_volatility,
 )
 
@@ -115,3 +124,108 @@ class TestComputeMomentumScore:
 
     def test_insufficient_data(self) -> None:
         assert compute_momentum_score([100.0]) == 0.0
+
+
+# ── compute_trend cache behaviour ─────────────────────────────────────────
+
+class TestComputeTrendCache:
+    """Verify cache hit/miss/TTL/eviction and thread-safety of compute_trend."""
+
+    _PATCH_LOAD = "pmod.research.signals._load_cached_closes"
+    _PATCH_HIST = "pmod.data.market.get_price_history"
+
+    def _clear_cache(self) -> None:
+        with _TREND_CACHE_LOCK:
+            _TREND_CACHE.clear()
+
+    def _inject(self, ticker: str, signal, age_sec: float = 0.0) -> None:
+        """Inject a pre-built signal directly into the cache."""
+        with _TREND_CACHE_LOCK:
+            _TREND_CACHE[ticker] = (signal, time.time() - age_sec)
+
+    def test_cache_miss_calls_load(self) -> None:
+        self._clear_cache()
+        closes = [100.0 + i for i in range(60)]
+        with patch(self._PATCH_LOAD, return_value=closes) as mock_load:
+            result = compute_trend("CACHE_MISS_TEST")
+        mock_load.assert_called_once_with("CACHE_MISS_TEST")
+        assert result.ticker == "CACHE_MISS_TEST"
+
+    def test_cache_hit_skips_load(self) -> None:
+        self._clear_cache()
+        closes = [100.0 + i for i in range(60)]
+        with patch(self._PATCH_LOAD, return_value=closes):
+            first = compute_trend("CACHE_HIT_TEST")
+
+        # Second call should be served from cache without hitting _load_cached_closes
+        with patch(self._PATCH_LOAD, side_effect=AssertionError("should not call")):
+            second = compute_trend("CACHE_HIT_TEST")
+
+        assert second.momentum_score == first.momentum_score
+
+    def test_expired_cache_entry_is_refreshed(self) -> None:
+        self._clear_cache()
+        closes_old = [50.0 + i for i in range(60)]
+        closes_new = [200.0 + i for i in range(60)]
+
+        # Inject a stale (expired) entry
+        with patch(self._PATCH_LOAD, return_value=closes_old):
+            _ = compute_trend("STALE_TEST")
+        # Age it beyond TTL
+        with _TREND_CACHE_LOCK:
+            sig, _ = _TREND_CACHE["STALE_TEST"]
+            _TREND_CACHE["STALE_TEST"] = (sig, time.time() - _TREND_CACHE_TTL - 1)
+
+        with patch(self._PATCH_LOAD, return_value=closes_new) as mock_load:
+            result = compute_trend("STALE_TEST")
+        mock_load.assert_called_once()
+        # New closes start at 200 → higher momentum than old closes starting at 50
+        assert result.data_points == len(closes_new)
+
+    def test_cache_evicts_oldest_when_full(self) -> None:
+        self._clear_cache()
+        closes = [100.0 + i for i in range(60)]
+
+        # Fill the cache to the max limit with synthetic entries
+        with _TREND_CACHE_LOCK:
+            for i in range(_TREND_CACHE_MAX):
+                from pmod.research.signals import TrendSignal
+                sig = TrendSignal(
+                    ticker=f"SYN{i:04d}",
+                    rsi_14=50.0, sma_crossover="neutral",
+                    momentum_score=0.0, volatility_pct=20.0,
+                    data_points=60,
+                )
+                _TREND_CACHE[f"SYN{i:04d}"] = (sig, float(i))  # older = lower timestamp
+
+        # Adding one more entry should trigger eviction; cache should stay ≤ max
+        with patch(self._PATCH_LOAD, return_value=closes):
+            compute_trend("EVICT_TRIGGER")
+
+        with _TREND_CACHE_LOCK:
+            size = len(_TREND_CACHE)
+        assert size <= _TREND_CACHE_MAX, f"Cache grew to {size}, expected ≤ {_TREND_CACHE_MAX}"
+
+    def test_concurrent_reads_are_consistent(self) -> None:
+        """Multiple threads reading the same ticker should all get a valid signal."""
+        self._clear_cache()
+        closes = [100.0 + i for i in range(60)]
+        results: list = []
+        errors: list = []
+
+        def _worker() -> None:
+            try:
+                with patch(self._PATCH_LOAD, return_value=closes):
+                    sig = compute_trend("CONCURRENT_TEST")
+                results.append(sig.ticker)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent errors: {errors}"
+        assert all(r == "CONCURRENT_TEST" for r in results)

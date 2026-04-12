@@ -2,6 +2,7 @@
 
 import functools
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Generator
 
 from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, create_engine, func, inspect, text
@@ -76,8 +77,8 @@ class PoliticianTrade(Base):
         Enum("purchase", "sale", "sale_partial", "exchange", name="trade_type"),
         nullable=False,
     )
-    transaction_date: DateTime = Column(DateTime, nullable=True)  # type: ignore[assignment]
-    disclosure_date: DateTime = Column(DateTime, nullable=False)  # type: ignore[assignment]
+    transaction_date: datetime | None = Column(DateTime, nullable=True)  # type: ignore[assignment]
+    disclosure_date: datetime = Column(DateTime, nullable=False)  # type: ignore[assignment]
     amount_low: int = Column(Integer, nullable=True)  # type: ignore[assignment]
     amount_high: int = Column(Integer, nullable=True)  # type: ignore[assignment]
     report_url: str = Column(String(500), nullable=True)  # type: ignore[assignment]
@@ -177,7 +178,7 @@ class ClosingPrice(Base):
 
     id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
     ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
-    date: DateTime = Column(DateTime, nullable=False, index=True)  # type: ignore[assignment]
+    date: datetime = Column(DateTime, nullable=False, index=True)  # type: ignore[assignment]
     close: float = Column(Float, nullable=False)  # type: ignore[assignment]
     cached_at = Column(DateTime, server_default=func.now())
 
