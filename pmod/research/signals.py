@@ -207,12 +207,12 @@ def _load_cached_closes(ticker: str) -> list[float]:
     Returns prices in chronological order (oldest to newest).
     """
     try:
-        from datetime import datetime, timedelta
+        from datetime import date, timedelta
 
         from pmod.data.models import ClosingPrice, get_session
 
-        # Load last 120 days of cached closes
-        cutoff = datetime.utcnow() - timedelta(days=130)
+        # Load last 120 days of cached closes (compare date vs date, not datetime)
+        cutoff = date.today() - timedelta(days=130)
 
         with get_session() as session:
             rows = (

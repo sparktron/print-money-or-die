@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
 
-from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, text
+from sqlalchemy import Column, Date, DateTime, Enum, Float, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from pmod.config import get_settings
@@ -181,7 +181,7 @@ class ClosingPrice(Base):
 
     id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
     ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
-    date: datetime = Column(DateTime, nullable=False, index=True)  # type: ignore[assignment]
+    date = Column(Date, nullable=False, index=True)
     close: float = Column(Float, nullable=False)  # type: ignore[assignment]
     cached_at = Column(DateTime, server_default=func.now())
 
@@ -222,8 +222,15 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
 
     if "closing_prices" in insp.get_table_names():
         with engine.connect() as conn:
-            # Remove duplicate (ticker, date) rows before creating the unique index;
-            # keep the row with the highest id (most recently inserted).
+            # Normalise date column from "YYYY-MM-DD HH:MM:SS" (old DateTime
+            # storage) to "YYYY-MM-DD" so the Date type can parse it correctly.
+            conn.execute(text("""
+                UPDATE closing_prices
+                SET date = substr(date, 1, 10)
+                WHERE length(date) > 10
+            """))
+            # Remove duplicate (ticker, date) rows before creating the unique
+            # index; keep the row with the highest id (most recently inserted).
             conn.execute(text("""
                 DELETE FROM closing_prices
                 WHERE id NOT IN (

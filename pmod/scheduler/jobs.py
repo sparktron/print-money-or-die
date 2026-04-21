@@ -316,7 +316,13 @@ def _capture_benchmark_snapshot() -> None:
 
 
 def _is_price_cache_stale() -> bool:
-    """Return True if the closing price cache has no data from the last 24 hours."""
+    """Return True if no closing prices have been cached in the last 24 hours.
+
+    Uses cached_at (the wall-clock insertion time) rather than date (the
+    trading day the price belongs to) so weekends and holidays — where the
+    most recent price date is legitimately in the past — don't trigger a
+    spurious re-fetch every startup.
+    """
     try:
         from datetime import datetime, timedelta
 
@@ -324,9 +330,7 @@ def _is_price_cache_stale() -> bool:
 
         cutoff = datetime.utcnow() - timedelta(hours=24)
         with get_session() as session:
-            # Compare against the full datetime, not just the date, so we don't
-            # accidentally match rows from earlier today that fall before cutoff.
-            row = session.query(ClosingPrice).filter(ClosingPrice.date >= cutoff).first()
+            row = session.query(ClosingPrice).filter(ClosingPrice.cached_at >= cutoff).first()
             return row is None
     except Exception:
         return True  # Assume stale if we can't check
