@@ -73,8 +73,18 @@ _WIZARD_INIT: dict = {
 }
 
 
+def _broker_connected() -> bool:
+    """Return True if Schwab tokens exist and auth reports connected."""
+    try:
+        from pmod.auth.schwab import auth_status
+        return auth_status().get("connected", False)
+    except Exception:
+        return False
+
+
 def _build_nav() -> html.Div:
     """Top navigation bar."""
+    connected = _broker_connected()
     return html.Div(
         [
             html.Div(
@@ -121,11 +131,15 @@ def _build_nav() -> html.Div:
                             "cursor": "pointer", "letterSpacing": "0.3px",
                         },
                     ),
-                    html.Span("LIVE", style={
-                        "fontSize": "10px", "fontWeight": "700", "color": COLORS["green"],
-                        "background": COLORS["green_bg"], "padding": "3px 10px",
-                        "borderRadius": "100px", "letterSpacing": "1.2px",
-                    }),
+                    html.Span(
+                        "● LIVE" if connected else "● DISCONNECTED",
+                        style={
+                            "fontSize": "10px", "fontWeight": "700",
+                            "color": COLORS["green"] if connected else COLORS["text_tertiary"],
+                            "background": COLORS["green_bg"] if connected else COLORS["surface_hover"],
+                            "padding": "3px 10px", "borderRadius": "100px", "letterSpacing": "1.2px",
+                        },
+                    ),
                 ],
                 style={"display": "flex", "alignItems": "center", "gap": "12px"},
             ),
