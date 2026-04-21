@@ -177,7 +177,18 @@ def _capture_snapshot() -> None:
             log.debug("snapshot_skipped_no_data")
             return
 
+        from datetime import datetime, timedelta
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
         with get_session() as session:
+            already = (
+                session.query(PortfolioSnapshot)
+                .filter(PortfolioSnapshot.captured_at >= today_start)
+                .first()
+            )
+            if already is not None:
+                log.debug("portfolio_snapshot_already_captured_today")
+                return
             snapshot = PortfolioSnapshot(
                 total_value=total_value,
                 cash_balance=cash_balance,
@@ -299,7 +310,18 @@ def _capture_benchmark_snapshot() -> None:
             log.debug("benchmark_snapshot_skipped_no_quote")
             return
 
+        from datetime import datetime
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+
         with get_session() as session:
+            already = (
+                session.query(BenchmarkSnapshot)
+                .filter(BenchmarkSnapshot.captured_at >= today_start)
+                .first()
+            )
+            if already is not None:
+                log.debug("benchmark_snapshot_already_captured_today")
+                return
             snapshot = BenchmarkSnapshot(
                 ticker="SPY",
                 close_price=quote.price,
