@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
 
-from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, create_engine, func, inspect, text
+from sqlalchemy import Column, DateTime, Enum, Float, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from pmod.config import get_settings
@@ -175,6 +175,9 @@ class ClosingPrice(Base):
     """Cached daily closing prices for momentum/trend calculations."""
 
     __tablename__ = "closing_prices"
+    __table_args__ = (
+        UniqueConstraint("ticker", "date", name="uix_cp_ticker_date"),
+    )
 
     id: int = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
     ticker: str = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
@@ -216,6 +219,22 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
             if "report_url" not in existing:
                 conn.execute(text("ALTER TABLE politician_trades ADD COLUMN report_url VARCHAR(500)"))
                 conn.commit()
+
+    if "closing_prices" in insp.get_table_names():
+        with engine.connect() as conn:
+            # Remove duplicate (ticker, date) rows before creating the unique index;
+            # keep the row with the highest id (most recently inserted).
+            conn.execute(text("""
+                DELETE FROM closing_prices
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM closing_prices GROUP BY ticker, date
+                )
+            """))
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uix_cp_ticker_date
+                ON closing_prices (ticker, date)
+            """))
+            conn.commit()
 
     # external_accounts / external_positions created via create_all; no column migrations needed yet
 
