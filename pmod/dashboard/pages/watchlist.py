@@ -90,20 +90,23 @@ def _load_picks() -> list[dict]:
                 try:
                     from pmod.utils.retry import polygon_limiter
                     polygon_limiter.acquire()
+                    # Snapshot endpoint gives today's price and true day-change %
+                    # (today's close vs previous close), unlike /prev which only
+                    # has the prior session's bar and would compute open→close.
                     resp = httpx.get(
-                        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/prev",
+                        f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
                         params={"apiKey": api_key},
                         timeout=2.5,
                     )
                     resp.raise_for_status()
-                    results = resp.json().get("results", [])
-                    if not results:
+                    ticker_data = resp.json().get("ticker", {})
+                    if not ticker_data:
                         return ticker, None
-                    r = results[0]
-                    close = float(r.get("c", 0))
-                    prev_open = float(r.get("o", close))
-                    change_pct = ((close - prev_open) / prev_open * 100) if prev_open else 0.0
-                    return ticker, {"price": close, "change_pct": round(change_pct, 2)}
+                    price = float(ticker_data.get("day", {}).get("c", 0) or ticker_data.get("lastTrade", {}).get("p", 0))
+                    change_pct = float(ticker_data.get("todaysChangePerc", 0))
+                    if not price:
+                        return ticker, None
+                    return ticker, {"price": price, "change_pct": round(change_pct, 2)}
                 except Exception:
                     return ticker, None
 
