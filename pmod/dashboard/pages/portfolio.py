@@ -103,12 +103,19 @@ def build_chart_figure(
     total_value: float = 0,
     masked: bool = True,
     filter_account: str = "__all__",
+    _hist_result: tuple | None = None,
 ) -> go.Figure:
-    """Return a % return from period-start figure.  Called by the Dash callback."""
+    """Return a % return from period-start figure.  Called by the Dash callback.
+
+    Pass _hist_result to reuse an already-fetched history tuple and avoid a
+    redundant DB/API round-trip (portfolio_layout pre-fetches for the subtitle).
+    """
     cutoff = _period_cutoff(period)
     days_back = (date.today() - cutoff).days + 5
 
-    if filter_account and filter_account != "__all__":
+    if _hist_result is not None:
+        hist_result = _hist_result
+    elif filter_account and filter_account != "__all__":
         hist_result = get_account_historical_returns(account_name=filter_account, days=days_back)
     else:
         hist_result = get_historical_returns(days=days_back)
@@ -179,7 +186,7 @@ def build_chart_figure(
     return fig
 
 
-def _build_chart(total_value: float, masked: bool, period: str = "1Y", filter_account: str = "__all__") -> html.Div:
+def _build_chart(total_value: float, masked: bool, period: str = "1Y", filter_account: str = "__all__", _hist_result: tuple | None = None) -> html.Div:
     """Chart area: period toggle buttons + the Plotly graph."""
     btn_base = {
         "background": "transparent",
@@ -207,7 +214,7 @@ def _build_chart(total_value: float, masked: bool, period: str = "1Y", filter_ac
         style={"display": "flex", "gap": "6px"},
     )
 
-    fig = build_chart_figure(period=period, total_value=total_value, masked=masked, filter_account=filter_account)
+    fig = build_chart_figure(period=period, total_value=total_value, masked=masked, filter_account=filter_account, _hist_result=_hist_result)
     graph = dcc.Graph(id="portfolio-chart", figure=fig, config={"displayModeBar": False})
 
     return html.Div([buttons, graph], style={"display": "flex", "flexDirection": "column", "gap": "14px"})
@@ -458,8 +465,28 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
     day_pnl_color = COLORS["green"] if grand_day_pnl >= 0 else COLORS["red"]
 
     alpha_data = calculate_alpha()
-    hist_result = get_historical_returns(days=365)
-    has_history = hist_result is not None and len(hist_result[2]) >= 2
+
+    # Fetch history once; pass the result into build_chart_figure to avoid a
+    # second identical call there.  Use the same period thresholds as
+    # build_chart_figure so the subtitle matches what the chart actually shows.
+    cutoff = _period_cutoff(chart_period)
+    days_back = (date.today() - cutoff).days + 5
+    if filter_account and filter_account != "__all__":
+        hist_result = get_account_historical_returns(account_name=filter_account, days=days_back)
+    else:
+        hist_result = get_historical_returns(days=days_back)
+
+    _MIN_POINTS = {"1W": 5, "1M": 20, "YTD": 50, "1Y": 100}
+    chart_is_real = False
+    n_real_days = 0
+    if hist_result is not None and len(hist_result[2]) >= 2:
+        paired_count = sum(
+            1 for d in hist_result[2]
+            if d >= cutoff.strftime("%Y-%m-%d")
+        )
+        if paired_count >= _MIN_POINTS.get(chart_period, 50):
+            chart_is_real = True
+            n_real_days = paired_count
 
     alpha_str, alpha_desc, alpha_color = "—", "Insufficient data", COLORS["text_tertiary"]
     if alpha_data is not None:
@@ -468,7 +495,11 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
         alpha_desc = f"vs S&P 500 ({alpha_data['days_tracked']} days)"
         alpha_color = COLORS["green"] if av >= 0 else COLORS["red"]
 
-    chart_subtitle = f"Real data ({len(hist_result[2])} trading days)" if has_history else "Simulated — enable daily snapshots for real data"
+    chart_subtitle = (
+        f"Real data ({n_real_days} trading days)"
+        if chart_is_real
+        else "Simulated — enable daily snapshots for real data"
+    )
 
     portfolio_value_str = mask_number(grand_total, masked=masked)
     cash_balance_str = mask_number(grand_cash, masked=masked)
@@ -539,7 +570,7 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
                 html.Span(chart_subtitle, style={"fontSize": "11px", "color": COLORS["text_tertiary"], "fontStyle": "italic"}),
             ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "baseline", "marginBottom": "16px"}),
             html.Div(
-                _build_chart(grand_total, masked=masked, period=chart_period, filter_account=filter_account),
+                _build_chart(grand_total, masked=masked, period=chart_period, filter_account=filter_account, _hist_result=hist_result),
                 style={"background": COLORS["surface"], "border": f"1px solid {COLORS['border']}", "borderRadius": "16px", "padding": "20px"},
             ),
         ], style={"marginBottom": "28px"}),
