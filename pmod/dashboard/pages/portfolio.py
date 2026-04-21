@@ -222,10 +222,12 @@ def _build_chart(total_value: float, masked: bool, period: str = "1Y", filter_ac
 
 # ── Positions table ────────────────────────────────────────────────────────
 
-def _weight_bar(pct: float) -> html.Div:
+def _weight_bar(pct: float, max_weight: float = 100.0) -> html.Div:
+    """Bar width is relative to the largest position in the table, not a fixed scalar."""
+    bar_pct = (pct / max(max_weight, pct)) * 100
     return html.Div(
         [
-            html.Div(style={"width": f"{min(pct * 3.5, 100)}%", "height": "4px", "background": COLORS["accent"], "borderRadius": "2px"}),
+            html.Div(style={"width": f"{bar_pct:.1f}%", "height": "4px", "background": COLORS["accent"], "borderRadius": "2px"}),
             html.Span(f"{pct:.1f}%", style={"fontSize": "12px", "color": COLORS["text_secondary"], "marginTop": "2px"}),
         ],
         style={"display": "flex", "flexDirection": "column", "alignItems": "flex-end"},
@@ -267,6 +269,8 @@ def _positions_table(rows_data: list[dict], masked: bool, show_pnl: bool = True)
     cell_day_pnl = {**cell_r, "width": "14%"}
     cell_total_pnl = {**cell_r, "width": "14%"}
     cell_weight = {**cell_r, "width": "9%"}
+
+    max_weight = max((p.get("weight", 0) for p in rows_data), default=100.0) or 100.0
 
     table_rows = []
     for p in rows_data:
@@ -312,7 +316,7 @@ def _positions_table(rows_data: list[dict], masked: bool, show_pnl: bool = True)
                 html.Td(html.Span(f"{total_pnl_str} ({total_pnl_pct_str})", style={"color": total_color}), style=cell_total_pnl),
             ]
 
-        row_cells.append(html.Td(_weight_bar(p["weight"]), style=cell_weight))
+        row_cells.append(html.Td(_weight_bar(p["weight"], max_weight=max_weight), style=cell_weight))
         table_rows.append(html.Tr(row_cells))
 
     return html.Div(
