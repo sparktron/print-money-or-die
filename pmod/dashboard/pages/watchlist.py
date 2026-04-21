@@ -5,6 +5,9 @@ the DB is empty (e.g. before the first ``pmod research run``).
 """
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import structlog
 from dash import html
 
@@ -12,8 +15,26 @@ from pmod.dashboard.components import COLORS, MONO, section_header, status_badge
 
 log = structlog.get_logger()
 
+# Module-level thread pool: avoids recreating 5 threads on every watchlist render.
+_quote_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="watchlist-quote")
+
+# Simple TTL cache so repeated tab switches don't burn Polygon quota.
+_picks_cache: tuple[float, list[dict]] | None = None
+_PICKS_TTL = 60.0  # seconds
+
 
 def _load_picks() -> list[dict]:
+    """Return cached picks, refreshing from DB+API when the TTL has expired."""
+    global _picks_cache
+    now = time.monotonic()
+    if _picks_cache is not None and now - _picks_cache[0] < _PICKS_TTL:
+        return _picks_cache[1]
+    result = _fetch_picks()
+    _picks_cache = (now, result)
+    return result
+
+
+def _fetch_picks() -> list[dict]:
     """Load watchlist items from the DB and enrich with live signals.
 
     Returns a list of pick dicts ready for ``_pick_card()``.  Falls back
@@ -78,7 +99,6 @@ def _load_picks() -> list[dict]:
         # Quotes are cosmetic; any slowness or rate-limit just shows "—".
         try:
             import httpx
-            from concurrent.futures import ThreadPoolExecutor, as_completed
 
             from pmod.config import get_settings
 
@@ -111,19 +131,18 @@ def _load_picks() -> list[dict]:
                     return ticker, None
 
             enrich_picks = picks[:5]
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                futures = {pool.submit(_fetch_quote, p["ticker"]): p for p in enrich_picks}
-                for future in as_completed(futures, timeout=3.0):
-                    try:
-                        ticker, data = future.result()
-                        if data:
-                            pick = futures[future]
-                            pick["price"] = f"${data['price']:,.2f}"
-                            sign = "+" if data["change_pct"] >= 0 else ""
-                            pick["change"] = f"{sign}{data['change_pct']:.1f}%"
-                            pick["change_positive"] = data["change_pct"] >= 0
-                    except Exception:
-                        pass
+            futures = {_quote_executor.submit(_fetch_quote, p["ticker"]): p for p in enrich_picks}
+            for future in as_completed(futures.keys(), timeout=3.0):
+                try:
+                    ticker, data = future.result()
+                    if data:
+                        pick = futures[future]
+                        pick["price"] = f"${data['price']:,.2f}"
+                        sign = "+" if data["change_pct"] >= 0 else ""
+                        pick["change"] = f"{sign}{data['change_pct']:.1f}%"
+                        pick["change_positive"] = data["change_pct"] >= 0
+                except Exception:
+                    pass
         except Exception as exc:
             log.debug("watchlist_quote_enrich_failed", error=str(exc)[:60])
 
