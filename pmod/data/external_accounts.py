@@ -195,24 +195,34 @@ def import_positions(
 
 
 def list_accounts() -> list[dict]:
-    """Return all external accounts with position count and total value."""
+    """Return all external accounts with position count and total value.
+
+    Uses a single aggregated query rather than one SELECT per account.
+    """
+    from sqlalchemy import func as sa_func
+
     with get_session() as session:
-        accounts = session.query(ExternalAccount).all()
-        results = []
-        for acct in accounts:
-            positions = session.query(ExternalPosition).filter_by(account_id=acct.id).all()
-            total_value = sum(p.market_value or 0 for p in positions)
-            results.append(
-                {
-                    "id": acct.id,
-                    "name": acct.name,
-                    "account_type": acct.account_type,
-                    "last_imported_at": acct.last_imported_at,
-                    "position_count": len(positions),
-                    "total_value": total_value,
-                }
+        rows = (
+            session.query(
+                ExternalAccount,
+                sa_func.count(ExternalPosition.id).label("position_count"),
+                sa_func.coalesce(sa_func.sum(ExternalPosition.market_value), 0.0).label("total_value"),
             )
-    return results
+            .outerjoin(ExternalPosition, ExternalPosition.account_id == ExternalAccount.id)
+            .group_by(ExternalAccount.id)
+            .all()
+        )
+        return [
+            {
+                "id": acct.id,
+                "name": acct.name,
+                "account_type": acct.account_type,
+                "last_imported_at": acct.last_imported_at,
+                "position_count": position_count,
+                "total_value": float(total_value),
+            }
+            for acct, position_count, total_value in rows
+        ]
 
 
 def get_positions(account_name: str) -> list[ExternalPosition]:
