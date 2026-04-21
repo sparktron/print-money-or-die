@@ -9,6 +9,7 @@ Logic:
 - Persist results as PoliticianSignal rows
 """
 
+import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
@@ -39,9 +40,6 @@ _MAX_MIDPOINT = 75_000_000.0
 def _amount_weight(low: int | None, high: int | None) -> float:
     """Return a normalised 0.5–2.0 weight based on trade size."""
     midpoint = _AMOUNT_MIDPOINTS.get((low, high), _DEFAULT_MIDPOINT)
-    # Log-scale normalisation so huge trades don't dominate completely
-    import math
-
     raw = math.log1p(midpoint) / math.log1p(_MAX_MIDPOINT)
     return 0.5 + raw * 1.5  # maps [0,1] → [0.5, 2.0]
 
