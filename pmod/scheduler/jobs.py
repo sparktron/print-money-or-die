@@ -229,20 +229,31 @@ def _cache_closing_prices() -> None:
         failed_count = 0
 
         with get_session() as session:
+            # Pre-load every (ticker, date) pair already in the DB for these
+            # tickers in a single query rather than one SELECT per bar (which
+            # would be ~1,800 round-trips for 15 tickers × 120 days).
+            from datetime import date as _date, datetime as _dt
+            existing_rows = (
+                session.query(ClosingPrice.ticker, ClosingPrice.date)
+                .filter(ClosingPrice.ticker.in_(tickers))
+                .all()
+            )
+            # Normalise to date objects regardless of whether the column stores
+            # datetime (old schema) or date (new schema) values.
+            seen: set[tuple[str, _date]] = {
+                (t, d.date() if isinstance(d, _dt) else d)
+                for t, d in existing_rows
+            }
+
             for ticker in sorted(tickers):
                 closes = get_closing_prices(ticker, days=120)
                 if not closes:
                     failed_count += 1
                     continue
 
-                # Store in database, skipping duplicates
                 for bar_date, close_price in closes.items():
-                    existing = (
-                        session.query(ClosingPrice)
-                        .filter_by(ticker=ticker, date=bar_date)
-                        .first()
-                    )
-                    if not existing:
+                    key = (ticker, bar_date if isinstance(bar_date, _date) else bar_date.date())
+                    if key not in seen:
                         session.add(
                             ClosingPrice(
                                 ticker=ticker,
@@ -250,6 +261,7 @@ def _cache_closing_prices() -> None:
                                 close=close_price,
                             )
                         )
+                        seen.add(key)
                         cached_count += 1
 
         log.info(
