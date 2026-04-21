@@ -1,8 +1,6 @@
 """Settings page — interactive risk profile and preferences editor."""
 from __future__ import annotations
 
-import json
-
 from dash import dcc, html
 
 from pmod.dashboard.components import COLORS, FONT, MONO, section_header, status_badge
@@ -181,7 +179,7 @@ _DD = {
 def settings_layout() -> html.Div:
     """Return the settings page layout with current values loaded from DB."""
     prefs = load_preferences_dict()
-    sectors = json.loads(prefs.get("sector_focus", "[]"))
+    sectors = prefs.get("sector_focus") or []
     max_pos = prefs["max_position_pct"]
     max_pos_label = f"{int(max_pos)}%" if max_pos == int(max_pos) else f"{max_pos}%"
     conn = _connection_statuses()

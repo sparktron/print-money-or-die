@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
 
-from sqlalchemy import Column, Date, DateTime, Enum, Float, Integer, String, Text, UniqueConstraint, create_engine, func, inspect, text
+from sqlalchemy import Column, Date, DateTime, Enum, Float, Integer, JSON, String, Text, UniqueConstraint, create_engine, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from pmod.config import get_settings
@@ -42,7 +42,7 @@ class UserPreference(Base):
         nullable=False,
         default="manual-confirm",
     )
-    sector_focus: str = Column(Text, nullable=True, default="[]")  # type: ignore[assignment]
+    sector_focus: list = Column(JSON, nullable=True, default=list)  # type: ignore[assignment]
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 

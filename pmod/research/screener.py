@@ -6,7 +6,6 @@ candidates are persisted to the WatchlistItem table.
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Callable
 
@@ -134,7 +133,7 @@ def rank_candidates(
     """
     prefs = load_preferences_dict()
     strategy = prefs.get("strategy", "balanced")
-    sector_focus = json.loads(prefs.get("sector_focus", "[]"))
+    sector_focus = prefs.get("sector_focus") or []
 
     candidates = _gather_candidates()
     if not candidates:

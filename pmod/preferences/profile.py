@@ -1,8 +1,6 @@
 """Risk tolerance, strategy, and sector constraint management."""
 from __future__ import annotations
 
-import json
-
 import structlog
 
 from pmod.data.models import UserPreference, get_session
@@ -15,7 +13,7 @@ _DEFAULTS: dict = {
     "max_position_pct": 5.0,
     "rebalance_frequency": "manual",
     "trade_execution": "manual-confirm",
-    "sector_focus": "[]",
+    "sector_focus": [],
 }
 
 
@@ -44,7 +42,7 @@ def load_preferences_dict() -> dict:
         "max_position_pct": prefs.max_position_pct,
         "rebalance_frequency": prefs.rebalance_frequency,
         "trade_execution": prefs.trade_execution,
-        "sector_focus": prefs.sector_focus or "[]",
+        "sector_focus": prefs.sector_focus or [],
     }
 
 
@@ -67,7 +65,7 @@ def save_preferences(
         prefs.max_position_pct = float(max_position_pct)
         prefs.rebalance_frequency = rebalance_frequency
         prefs.trade_execution = trade_execution
-        prefs.sector_focus = json.dumps(sector_focus or [])
+        prefs.sector_focus = sector_focus or []
         log.info(
             "preferences_saved",
             risk=risk_tolerance,
