@@ -154,9 +154,9 @@ def generate_signals(window_days: int = 90, min_trades: int = 2) -> list[Politic
 
         agg = _aggregate_trades(trades, now)
 
-        # Replace all existing signals
-        session.query(PoliticianSignal).delete()
-
+        # Insert new signals first so readers never see an empty table.
+        # generated_at is set to `now` on all new rows; after the flush we
+        # delete any rows whose generated_at predates this batch.
         signals: list[PoliticianSignal] = []
         for ticker, data in agg.items():
             total = data["buy_count"] + data["sell_count"]
@@ -178,9 +178,17 @@ def generate_signals(window_days: int = 90, min_trades: int = 2) -> list[Politic
                 sell_count=data["sell_count"],
                 unique_politicians=unique_pols,
                 rationale=rationale,
+                generated_at=now,
             )
             session.add(row)
             signals.append(row)
+
+        # Flush so the new rows have persisted IDs, then evict stale signals
+        # (any row written before this batch started).
+        session.flush()
+        session.query(PoliticianSignal).filter(
+            PoliticianSignal.generated_at < now
+        ).delete(synchronize_session=False)
 
         log.info("politician signals generated", count=len(signals))
         return signals
