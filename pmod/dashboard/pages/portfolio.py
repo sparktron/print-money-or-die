@@ -468,36 +468,40 @@ def portfolio_layout(masked: bool = True, filter_account: str = "__all__", chart
     day_pnl_sign = "+" if grand_day_pnl >= 0 else ""
     day_pnl_color = COLORS["green"] if grand_day_pnl >= 0 else COLORS["red"]
 
-    alpha_data = calculate_alpha()
-
-    # Fetch history once; pass the result into build_chart_figure to avoid a
-    # second identical call there.  Use the same period thresholds as
-    # build_chart_figure so the subtitle matches what the chart actually shows.
-    cutoff = _period_cutoff(chart_period)
-    days_back = (date.today() - cutoff).days + 5
-    if filter_account and filter_account != "__all__":
-        hist_result = get_account_historical_returns(account_name=filter_account, days=days_back)
-    else:
-        hist_result = get_historical_returns(days=days_back)
-
-    _MIN_POINTS = {"1W": 5, "1M": 20, "YTD": 50, "1Y": 100}
+    # Alpha and historical data are only meaningful with real account data.
+    # Skip these calls entirely in sample-data mode to avoid wasted work.
+    hist_result: tuple | None = None
     chart_is_real = False
     n_real_days = 0
-    if hist_result is not None and len(hist_result[2]) >= 2:
-        paired_count = sum(
-            1 for d in hist_result[2]
-            if d >= cutoff.strftime("%Y-%m-%d")
-        )
-        if paired_count >= _MIN_POINTS.get(chart_period, 50):
-            chart_is_real = True
-            n_real_days = paired_count
-
     alpha_str, alpha_desc, alpha_color = "—", "Insufficient data", COLORS["text_tertiary"]
-    if alpha_data is not None:
-        av = alpha_data["alpha_pct"]
-        alpha_str = f"{'+'if av>=0 else ''}{av}%"
-        alpha_desc = f"vs S&P 500 ({alpha_data['days_tracked']} days)"
-        alpha_color = COLORS["green"] if av >= 0 else COLORS["red"]
+
+    if is_live:
+        alpha_data = calculate_alpha()
+        if alpha_data is not None:
+            av = alpha_data["alpha_pct"]
+            alpha_str = f"{'+'if av>=0 else ''}{av}%"
+            alpha_desc = f"vs S&P 500 ({alpha_data['days_tracked']} days)"
+            alpha_color = COLORS["green"] if av >= 0 else COLORS["red"]
+
+        # Fetch history once; pass into build_chart_figure to avoid a second
+        # identical call. Use the same period thresholds as build_chart_figure
+        # so the subtitle matches what the chart actually shows.
+        cutoff = _period_cutoff(chart_period)
+        days_back = (date.today() - cutoff).days + 5
+        if filter_account and filter_account != "__all__":
+            hist_result = get_account_historical_returns(account_name=filter_account, days=days_back)
+        else:
+            hist_result = get_historical_returns(days=days_back)
+
+        _MIN_POINTS = {"1W": 5, "1M": 20, "YTD": 50, "1Y": 100}
+        if hist_result is not None and len(hist_result[2]) >= 2:
+            paired_count = sum(
+                1 for d in hist_result[2]
+                if d >= cutoff.strftime("%Y-%m-%d")
+            )
+            if paired_count >= _MIN_POINTS.get(chart_period, 50):
+                chart_is_real = True
+                n_real_days = paired_count
 
     chart_subtitle = (
         f"Real data ({n_real_days} trading days)"
