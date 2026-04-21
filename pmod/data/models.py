@@ -206,22 +206,20 @@ def _get_session_factory():  # type: ignore[no-untyped-def]
 def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
     """Apply incremental schema changes to existing databases."""
     insp = inspect(engine)
-    if "user_preferences" in insp.get_table_names():
-        existing = {c["name"] for c in insp.get_columns("user_preferences")}
-        with engine.connect() as conn:
+    table_names = set(insp.get_table_names())
+
+    with engine.connect() as conn:
+        if "user_preferences" in table_names:
+            existing = {c["name"] for c in insp.get_columns("user_preferences")}
             if "sector_focus" not in existing:
                 conn.execute(text("ALTER TABLE user_preferences ADD COLUMN sector_focus TEXT DEFAULT '[]'"))
-                conn.commit()
 
-    if "politician_trades" in insp.get_table_names():
-        existing = {c["name"] for c in insp.get_columns("politician_trades")}
-        with engine.connect() as conn:
+        if "politician_trades" in table_names:
+            existing = {c["name"] for c in insp.get_columns("politician_trades")}
             if "report_url" not in existing:
                 conn.execute(text("ALTER TABLE politician_trades ADD COLUMN report_url VARCHAR(500)"))
-                conn.commit()
 
-    if "closing_prices" in insp.get_table_names():
-        with engine.connect() as conn:
+        if "closing_prices" in table_names:
             # Normalise date column from "YYYY-MM-DD HH:MM:SS" (old DateTime
             # storage) to "YYYY-MM-DD" so the Date type can parse it correctly.
             conn.execute(text("""
@@ -241,7 +239,8 @@ def _run_migrations(engine) -> None:  # type: ignore[no-untyped-def]
                 CREATE UNIQUE INDEX IF NOT EXISTS uix_cp_ticker_date
                 ON closing_prices (ticker, date)
             """))
-            conn.commit()
+
+        conn.commit()
 
     # external_accounts / external_positions created via create_all; no column migrations needed yet
 
