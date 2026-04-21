@@ -45,16 +45,21 @@ def mask_number(value: float, show_last_n: int = 3, masked: bool | None = None) 
 
     Pass masked=True/False to override the env-var default.
     Example: 12345.67 → $***567 (shows last 3 digits)
+    Negative values preserve their sign: -12345.67 → -$***567
     """
     should_mask = _DEV_MODE if masked is None else masked
     if not should_mask:
-        return f"${value:,.2f}" if isinstance(value, (int, float)) else str(value)
+        if isinstance(value, (int, float)):
+            sign = "-" if value < 0 else ""
+            return f"{sign}${abs(value):,.2f}"
+        return str(value)
 
-    int_value = int(value)
+    sign = "-" if value < 0 else ""
+    int_value = int(abs(value))
     int_str = str(int_value)
     visible_digits = int_str[-show_last_n:] if len(int_str) > show_last_n else int_str
     hidden_count = max(0, len(int_str) - show_last_n)
-    return "$" + "*" * hidden_count + visible_digits
+    return sign + "$" + "*" * hidden_count + visible_digits
 
 
 def mask_pct(value: float, masked: bool | None = None) -> str:
@@ -62,20 +67,24 @@ def mask_pct(value: float, masked: bool | None = None) -> str:
 
     Pass masked=True/False to override the env-var default.
     Example: 45.67% → ***67%
+    Negative values preserve their sign: -45.67% → -***67%
     """
     should_mask = _DEV_MODE if masked is None else masked
     if not should_mask:
         return f"{value:.2f}%"
 
+    sign = "-" if value < 0 else ""
+    abs_value = abs(value)
+
     # Handle zero and very small values — just show "0.00%"
-    if abs(value) < 0.01:
+    if abs_value < 0.01:
         return "0.00%"
 
-    formatted = f"{value:.2f}"
+    formatted = f"{abs_value:.2f}"
     digits_only = formatted.replace(",", "").replace(".", "")
     visible_chars = digits_only[-2:] if len(digits_only) > 2 else digits_only
     hidden_count = max(0, len(digits_only) - 2)
-    return "*" * hidden_count + visible_chars + "%"
+    return sign + "*" * hidden_count + visible_chars + "%"
 
 
 # ── Plotly layout template ────────────────────────────────────────────────
