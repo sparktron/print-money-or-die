@@ -226,12 +226,18 @@ def list_accounts() -> list[dict]:
 
 
 def get_positions(account_name: str) -> list[ExternalPosition]:
-    """Return all positions for the named account."""
+    """Return all positions for the named account.
+
+    Objects are expunged from the session before return so callers can
+    access attributes safely after the context exits.
+    """
     with get_session() as session:
         acct = session.query(ExternalAccount).filter_by(name=account_name).first()
         if acct is None:
             return []
-        return session.query(ExternalPosition).filter_by(account_id=acct.id).all()
+        positions = session.query(ExternalPosition).filter_by(account_id=acct.id).all()
+        session.expunge_all()
+        return positions
 
 
 def clear_account(account_name: str) -> bool:

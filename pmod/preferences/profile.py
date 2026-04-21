@@ -18,9 +18,17 @@ _DEFAULTS: dict = {
 
 
 def get_preferences() -> UserPreference | None:
-    """Return the current user preference record, or None if not yet set up."""
+    """Return the current user preference record, or None if not yet set up.
+
+    The returned object is expunged from the session so attribute access is
+    safe after the context exits regardless of lazy-load relationships added
+    in the future.
+    """
     with get_session() as session:
-        return session.query(UserPreference).first()
+        prefs = session.query(UserPreference).first()
+        if prefs is not None:
+            session.expunge(prefs)
+        return prefs
 
 
 def has_completed_setup() -> bool:
