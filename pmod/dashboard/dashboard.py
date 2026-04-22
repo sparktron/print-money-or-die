@@ -718,7 +718,7 @@ def create_app() -> dash.Dash:
         visible = {"display": "block"}
         trigger = ctx.triggered_id
 
-        if trigger in ("trade-cancel-btn", "trade-modal-backdrop", "trade-confirm-btn"):
+        if trigger in ("trade-cancel-btn", "trade-modal-backdrop"):
             return hidden, no_update, no_update, no_update, ""
 
         if store and store.get("ticker"):
@@ -771,6 +771,7 @@ def create_app() -> dash.Dash:
 
     @app.callback(
         Output("trade-result-msg", "children", allow_duplicate=True),
+        Output("trade-modal", "style", allow_duplicate=True),
         Input("trade-confirm-btn", "n_clicks"),
         State("trade-pending-store", "data"),
         State("trade-shares-input", "value"),
@@ -784,9 +785,10 @@ def create_app() -> dash.Dash:
         shares: int | None,
         order_type: str,
         limit_price: float | None,
-    ) -> str:
+    ) -> tuple:
+        hidden = {"display": "none"}
         if not n_clicks or not store or not store.get("ticker"):
-            return no_update
+            return no_update, no_update
 
         from pmod.broker.schwab import OrderRequest, place_order
 
@@ -802,14 +804,16 @@ def create_app() -> dash.Dash:
 
         if result.success:
             order_ref = f" (ID {result.order_id})" if result.order_id else ""
+            # Close the modal on success — user confirmed, order is in
             return html.Span(
                 f"✓ {result.message}{order_ref}",
                 style={"color": COLORS["green"]},
-            )
+            ), hidden
+        # Leave modal open on failure so user can see the error
         return html.Span(
             f"✗ {result.message}",
             style={"color": COLORS["red"]},
-        )
+        ), no_update
 
     # ── Portfolio: rebalance panel ─────────────────────────────────────────
 
