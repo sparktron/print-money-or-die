@@ -434,9 +434,9 @@ def create_app() -> dash.Dash:
     @app.callback(
         Output("tab-content", "children"),
         Input("main-tabs", "value"),
-        Input("mask-amounts-store", "data"),
-        Input("account-filter-store", "data"),
-        Input("chart-period-store", "data"),
+        State("mask-amounts-store", "data"),
+        State("account-filter-store", "data"),
+        State("chart-period-store", "data"),
     )
     def render_tab(tab: str, masked: bool, account_filter: str | None, chart_period: str | None) -> html.Div:
         if tab == "portfolio":
