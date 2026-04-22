@@ -5,6 +5,7 @@ the DB is empty (e.g. before the first ``pmod research run``).
 """
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -19,7 +20,10 @@ log = structlog.get_logger()
 _quote_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="watchlist-quote")
 
 # Simple TTL cache so repeated tab switches don't burn Polygon quota.
+# _picks_lock guards both reads and writes; _fetch_picks is called outside
+# the lock so a slow API call doesn't block other threads from reading a warm cache.
 _picks_cache: tuple[float, list[dict]] | None = None
+_picks_lock = threading.Lock()
 _PICKS_TTL = 60.0  # seconds
 
 
@@ -27,10 +31,13 @@ def _load_picks() -> list[dict]:
     """Return cached picks, refreshing from DB+API when the TTL has expired."""
     global _picks_cache
     now = time.monotonic()
-    if _picks_cache is not None and now - _picks_cache[0] < _PICKS_TTL:
-        return _picks_cache[1]
+    with _picks_lock:
+        if _picks_cache is not None and now - _picks_cache[0] < _PICKS_TTL:
+            return _picks_cache[1]
+    # Fetch outside the lock so a slow call doesn't block readers of a warm cache
     result = _fetch_picks()
-    _picks_cache = (now, result)
+    with _picks_lock:
+        _picks_cache = (now, result)
     return result
 
 
