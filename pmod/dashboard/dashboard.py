@@ -926,7 +926,7 @@ def create_app() -> dash.Dash:
                             style={"fontSize": "12px", "color": COLORS["text_tertiary"], "marginBottom": "4px"}
                         ),
                     ], style={"margin": "0", "paddingLeft": "20px"}),
-                ], style={"background": COLORS["surface_overlay"] if "surface_overlay" in COLORS else COLORS["surface"],
+                ], style={"background": COLORS["surface_elevated"],
                          "padding": "10px 12px", "borderRadius": "8px", "borderLeft": f"3px solid {COLORS['accent']}"}),
             ], style={"fontSize": "13px", "color": COLORS["text_secondary"], "lineHeight": "1.6"}),
         ], style={
@@ -1082,7 +1082,7 @@ def create_app() -> dash.Dash:
                         "marginBottom": "14px",
                         "lineHeight": "1.5",
                         "padding": "10px 12px",
-                        "background": COLORS["surface_overlay"] if "surface_overlay" in COLORS else COLORS["surface"],
+                        "background": COLORS["surface_elevated"],
                         "borderRadius": "8px",
                         "borderLeft": f"3px solid {COLORS['accent']}",
                     }
