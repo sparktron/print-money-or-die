@@ -153,37 +153,7 @@ def advisor_layout() -> html.Div:
 # ── Response rendering helpers (called by app.py callback) ──────────────────
 
 def render_response(text: str) -> html.Div:
-    """Render Claude's response text as formatted markdown-ish paragraphs."""
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-
-    rendered: list = []
-    for para in paragraphs:
-        lines = para.split("\n")
-        # Detect a bullet list
-        if all(l.lstrip().startswith(("- ", "• ", "* ")) for l in lines if l.strip()):
-            items = [html.Li(l.lstrip("- •* ").strip(), style={
-                "marginBottom": "6px",
-                "color": COLORS["text_secondary"],
-                "fontSize": "14px",
-                "lineHeight": "1.6",
-            }) for l in lines if l.strip()]
-            rendered.append(html.Ul(items, style={"margin": "0 0 12px 0", "paddingLeft": "20px"}))
-        elif para.startswith("#"):
-            heading = para.lstrip("# ").strip()
-            rendered.append(html.H3(heading, style={
-                "fontSize": "15px",
-                "fontWeight": "700",
-                "color": COLORS["text_primary"],
-                "margin": "16px 0 8px 0",
-            }))
-        else:
-            rendered.append(html.P(para, style={
-                "fontSize": "14px",
-                "lineHeight": "1.7",
-                "color": COLORS["text_secondary"],
-                "margin": "0 0 12px 0",
-            }))
-
+    """Render Claude's response text using dcc.Markdown for full CommonMark support."""
     return html.Div(
         [
             html.Div(
@@ -204,7 +174,14 @@ def render_response(text: str) -> html.Div:
                 ],
                 style={"marginBottom": "16px", "display": "flex", "alignItems": "center"},
             ),
-            *rendered,
+            dcc.Markdown(
+                text,
+                style={
+                    "fontSize": "14px",
+                    "lineHeight": "1.7",
+                    "color": COLORS["text_secondary"],
+                },
+            ),
         ],
         style={
             "background": COLORS["surface"],
