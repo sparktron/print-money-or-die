@@ -408,7 +408,7 @@ def _kpi_row(politicians: list[dict], recent: list[dict]) -> html.Div:
     return html.Div(
         [
             _kpi("Members Tracked", str(members) if members else "—"),
-            _kpi(f"Trades ({90}d)", str(total_trades) if total_trades else "—"),
+            _kpi("Trades (365d)", str(total_trades) if total_trades else "—"),
             _kpi("Strong Buy Signals", str(strong_buys), "green" if strong_buys else None),
             _kpi("Sell Signals", str(sells), "red" if sells else None),
         ],
