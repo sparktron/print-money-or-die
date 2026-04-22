@@ -694,6 +694,37 @@ def create_app() -> dash.Dash:
 
         return no_update
 
+    # ── Watchlist: dismiss pick ────────────────────────────────────────────
+
+    @app.callback(
+        Output({"type": "watchlist-dismiss", "ticker": MATCH}, "style"),
+        Input({"type": "watchlist-dismiss", "ticker": MATCH}, "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def dismiss_watchlist_item(n_clicks: int) -> dict:
+        if not n_clicks:
+            return no_update
+        ticker = ctx.triggered_id["ticker"]
+        try:
+            from pmod.data.models import WatchlistItem, get_session
+            from pmod.dashboard.pages import watchlist as wl_mod
+            with get_session() as session:
+                item = session.query(WatchlistItem).filter_by(ticker=ticker).first()
+                if item:
+                    session.delete(item)
+            # Invalidate cache so next tab visit re-fetches without this pick
+            wl_mod._picks_cache = None
+        except Exception:
+            pass
+        # Hide the parent card by returning a display:none on the button won't
+        # hide the card — return a disabled/greyed style instead as visual feedback
+        return {
+            "padding": "10px 20px", "fontSize": "13px", "fontWeight": "500",
+            "color": COLORS["text_tertiary"], "background": COLORS["surface"],
+            "border": f"1px solid {COLORS['border']}", "borderRadius": "10px",
+            "cursor": "default", "opacity": "0.4", "pointerEvents": "none",
+        }
+
     # ── Trade modal: show/hide ─────────────────────────────────────────────
 
     @app.callback(
