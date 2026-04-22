@@ -176,7 +176,7 @@ def _recent_trades_table(rows: list[dict]) -> html.Div:
 
     return html.Div(
         html.Table([html.Thead(header), html.Tbody(trade_rows)], style={"width": "100%", "borderCollapse": "collapse"}),
-        style={"overflowX": "auto", "background": COLORS["surface_elevated"], "border": f"1px solid {COLORS['border']}", "borderRadius": "12px", "overflow": "hidden"},
+        style={"overflowX": "auto", "overflowY": "hidden", "background": COLORS["surface_elevated"], "border": f"1px solid {COLORS['border']}", "borderRadius": "12px"},
     )
 
 
@@ -221,7 +221,7 @@ def _members_table(politicians: list[dict]) -> html.Div:
 
     return html.Div(
         html.Table([html.Thead(header), html.Tbody(rows)], style={"width": "100%", "borderCollapse": "collapse"}),
-        style={"overflowX": "auto", "background": COLORS["surface_elevated"], "border": f"1px solid {COLORS['border']}", "borderRadius": "12px", "overflow": "hidden"},
+        style={"overflowX": "auto", "overflowY": "hidden", "background": COLORS["surface_elevated"], "border": f"1px solid {COLORS['border']}", "borderRadius": "12px"},
     )
 
 
