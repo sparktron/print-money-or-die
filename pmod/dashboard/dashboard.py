@@ -571,9 +571,12 @@ def create_app() -> dash.Dash:
         prevent_initial_call=True,
     )
     def handle_wizard_nav(next_clicks: int, back_clicks: int, state: dict) -> dict:
+        from pmod.dashboard.pages.setup import _can_advance
         trigger_id = ctx.triggered_id
         if trigger_id == "wizard-next":
-            state["step"] = min(state.get("step", 1) + 1, 5)
+            current_step = state.get("step", 1)
+            if _can_advance(current_step, state):
+                state["step"] = min(current_step + 1, 5)
         elif trigger_id == "wizard-back":
             state["step"] = max(state.get("step", 1) - 1, 1)
         return state
