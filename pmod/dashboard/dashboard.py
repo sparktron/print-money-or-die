@@ -651,7 +651,7 @@ def create_app() -> dash.Dash:
     @app.callback(
         Output("trade-pending-store", "data"),
         Input({"type": "watchlist-buy", "ticker": ALL, "name": ALL, "price": ALL}, "n_clicks"),
-        Input({"type": "rebalance-execute", "ticker": ALL}, "n_clicks"),
+        Input({"type": "rebalance-execute", "ticker": ALL, "account": ALL}, "n_clicks"),
         State("trade-pending-store", "data"),
         prevent_initial_call=True,
     )
