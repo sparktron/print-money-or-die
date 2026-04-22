@@ -181,8 +181,10 @@ def _momentum_bar(score: int) -> html.Div:
         color = COLORS["green"]
     elif score >= 60:
         color = COLORS["accent"]
-    else:
+    elif score >= 40:
         color = COLORS["orange"]
+    else:
+        color = COLORS["red"]
 
     return html.Div(
         [
