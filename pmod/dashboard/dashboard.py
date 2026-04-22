@@ -1252,7 +1252,6 @@ def create_app() -> dash.Dash:
             return no_update, no_update
 
         try:
-            import json
             from pmod.preferences.profile import load_preferences_dict, save_preferences
             prefs = load_preferences_dict()
             save_preferences(
@@ -1283,7 +1282,6 @@ def create_app() -> dash.Dash:
             return no_update, no_update
 
         try:
-            import json
             from pmod.preferences.profile import load_preferences_dict, save_preferences
             prefs = load_preferences_dict()
             save_preferences(

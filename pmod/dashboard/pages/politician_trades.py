@@ -20,13 +20,6 @@ def _senate_search_url(name: str) -> str:
     )
 
 
-def _profile_url(name: str, chamber: str, report_url: str = "") -> str:
-    """Return the best available URL for a politician's disclosures."""
-    if report_url:
-        return report_url
-    return _senate_search_url(name)
-
-
 # ── Shared badge helpers ───────────────────────────────────────────────────
 
 def _signal_badge(signal: str) -> html.Span:
